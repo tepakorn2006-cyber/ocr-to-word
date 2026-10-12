@@ -522,7 +522,7 @@
     <p id="empty" class="empty">ยังไม่มีผลลัพธ์ กรุณาเพิ่มรูปแล้วกดเริ่มอ่านข้อความ</p>
 
     <details id="near-details">
-      <summary>ตัวเลขที่ยาวไม่ครบ/เกิน 10 หลัก (ไม่ถูกรวมอัตโนมัติ)</summary>
+      <summary>ตัวเลขที่ไม่แน่ใจ / ยาวไม่ครบหรือเกิน 10 หลัก (ไม่ถูกรวมอัตโนมัติ)</summary>
       <ul id="near-list" class="near-list"></ul>
       <p id="near-empty" class="muted" hidden>ไม่มีรายการ</p>
     </details>
@@ -774,33 +774,34 @@ function buildFileStamp(d) {
   return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
 }
 
-// OCR scales for one image, from its long side: the canvas long side is aimed at 1000px, at 1400px
-// and at 4000px (the full read, capped at 1). Each scale is capped at OCR_SCALE_MAX, and a scale
-// within 0.05 of an earlier one is dropped so the same canvas is not read twice.
-const OCR_SIDE_SMALL = 1000;
-const OCR_SIDE_MID = 1400;
-const OCR_SIDE_FULL = 4000;
+// OCR scales for one image, from its long side: one pass per target long side (px), scale = T / L.
+// Each scale is capped at OCR_SCALE_MAX. A scale whose canvas long side (round(L * s)) equals an
+// earlier one is dropped, so the same canvas is not read twice.
+const OCR_TARGET_SIDES = [600, 800, 1000, 1200, 1400, 1700];
 const OCR_SCALE_MAX = 4;
+const OCR_FULL_SIDE_MAX = 4000;
 
-// Returns the scales to OCR one image at, in order: [1000/L, 1400/L, min(1, 4000/L)].
+// Returns the scales to OCR one image at, in order: fixed target long sides, then the
+// image's own size (capped at 4000px). The own-size pass is what reads bordered tables.
 function ocrScales(longSide) {
   if (!(longSide > 0)) return [1];
-  const raw = [
-    OCR_SIDE_SMALL / longSide,
-    OCR_SIDE_MID / longSide,
-    Math.min(1, OCR_SIDE_FULL / longSide)
-  ];
   const out = [];
-  for (const r of raw) {
-    const s = Math.min(OCR_SCALE_MAX, r);
-    if (!out.some((o) => Math.abs(o - s) < 0.05)) out.push(s);
+  const seenSides = new Set();
+  const targets = OCR_TARGET_SIDES.concat([Math.min(longSide, OCR_FULL_SIDE_MAX)]);
+  for (const t of targets) {
+    const s = Math.min(OCR_SCALE_MAX, t / longSide);
+    const side = Math.round(longSide * s);
+    if (seenSides.has(side)) continue;
+    seenSides.add(side);
+    out.push(s);
   }
   return out;
 }
 
 // Merges OCR candidates from several passes into one list in final reading order.
 // passes: array of arrays of {v, x, y, lh}, each pass in its own reading order.
-// Returns [{value, conflict, alternatives}].
+// Returns [{value, conflict, alternatives, votes, support}]: votes = passes whose value is the winner,
+// support = distinct passes in the group.
 function mergePasses(passes) {
   const list = Array.isArray(passes) ? passes : [];
   const counts = list.map((p) => (p ? p.length : 0));
@@ -892,12 +893,14 @@ function mergePasses(passes) {
     const alternatives = [...tally.keys()].filter((v) => v !== value);
     return {
       value, conflict: alternatives.length > 0, alternatives,
+      votes: best.count, support: g.passes.size,
       y: g.y, x: g.x, lh: g.lh, key: g.key, order: g.order
     };
   });
 
   merged.sort((a, b) => (a.key - b.key) || (a.order - b.order));
-  return merged.map(({ value, conflict, alternatives, y, x, lh }) => ({ value, conflict, alternatives, y, x, lh }));
+  return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh }) =>
+    ({ value, conflict, alternatives, votes, support, y, x, lh }));
 }
 
 // Re-orders merged entries ({y, x, lh}) into rows: top to bottom, then left to right inside a row.
@@ -970,20 +973,39 @@ function collectCandidates(lines, fixConfusions, scale) {
 }
 
 // passes: [{scale, text, lines}], base pass first. order: 'reading' (default) or 'rows'.
-// Returns the image's accepted values, the alternatives per value, and near misses from the base pass.
+// Agreement rule, per merged candidate:
+//   votes >= 2                      -> accepted (flagged when other values were seen)
+//   votes 1 and support >= 2        -> accepted and flagged (its alternatives are the other values)
+//   support 1 (one pass saw it)     -> not accepted; goes to near, unless the image has a single pass
+// Returns the accepted values, the alternatives per value, the near misses (base-pass runs and
+// single-pass values), and nearSingle: the near values that came from the agreement rule.
 function buildImageResult(passes, fixConfusions, order) {
   const list = Array.isArray(passes) ? passes : [];
-  if (list.length === 0) return { exact: [], alts: [], near: [] };
-  let merged = mergePasses(list.map((p) => collectCandidates(p.lines, fixConfusions, p.scale)));
-  if (order === 'rows') merged = sortByRows(merged);
-  const exact = merged.map((m) => m.value);
-  const alts = merged.map((m) => m.alternatives);
+  if (list.length === 0) return { exact: [], alts: [], near: [], nearSingle: [] };
+  const merged = mergePasses(list.map((p) => collectCandidates(p.lines, fixConfusions, p.scale)));
+  const singlePassAllowed = list.length === 1;
+  const accepted = [];
+  const singles = [];
+  for (const m of merged) {
+    if (m.votes >= 2 || m.support >= 2 || singlePassAllowed) accepted.push(m);
+    else singles.push(m.value);
+  }
+  const ordered = order === 'rows' ? sortByRows(accepted) : accepted;
+  const exact = ordered.map((m) => m.value);
+  const alts = ordered.map((m) => m.alternatives);
+
   const baseNear = [];
   for (const line of list[0].lines) {
     baseNear.push(...extractNumbers(line.text, fixConfusions).nearMiss);
   }
   const near = baseNear.filter((n) => !exact.some((e) => e.includes(n) || n.includes(e)));
-  return { exact, alts, near };
+  const nearSingle = [];
+  for (const v of singles) {
+    if (exact.includes(v) || near.includes(v) || nearSingle.includes(v)) continue;
+    nearSingle.push(v);
+    near.push(v);
+  }
+  return { exact, alts, near, nearSingle };
 }
 /* @pure-end */
 
@@ -1040,7 +1062,8 @@ const els = {
 
 const state = {
   // {id, file, url, status: 'wait' | 'reading' | 'done' | 'error', error, rawText, exact: [], near: [],
-  //  passes: [{scale, text, lines}] (base first), alts: [[alternative values per exact value]]}
+  //  passes: [{scale, text, lines}] (base first), alts: [[alternative values per exact value]],
+  //  nearSingle: [near values that came from the single-pass rule, shown with a note]}
   images: [],
   // {id, value, checked, source: 'ocr' | 'manual', imageIndex, edited, nearKey, conflict, alternatives}
   rows: [],
@@ -1226,6 +1249,7 @@ function acceptFiles(files) {
       rawText: '',
       exact: [],
       near: [],
+      nearSingle: [],
       passes: [],
       alts: []
     });
@@ -1468,6 +1492,7 @@ function finishImage(img) {
   img.exact = res.exact;
   img.alts = res.alts;
   img.near = res.near;
+  img.nearSingle = res.nearSingle;
   img.status = 'done';
   img.error = '';
   addOcrRows(state.images.indexOf(img));
@@ -1659,6 +1684,7 @@ async function rerunAll() {
     img.rawText = '';
     img.exact = [];
     img.near = [];
+    img.nearSingle = [];
     img.passes = [];
     img.alts = [];
   });
@@ -1675,6 +1701,7 @@ function rebuildFromPasses() {
     img.exact = res.exact;
     img.alts = res.alts;
     img.near = res.near;
+    img.nearSingle = res.nearSingle;
   });
   state.rows = state.rows.filter((r) => r.source !== 'ocr');
   state.images.forEach((img, i) => { if (img.status === 'done') addOcrRows(i); });
@@ -1748,6 +1775,7 @@ async function clearResults() {
     img.rawText = '';
     img.exact = [];
     img.near = [];
+    img.nearSingle = [];
     img.passes = [];
     img.alts = [];
   });
@@ -1934,7 +1962,8 @@ function renderRows() {
       const cf = document.createElement('span');
       cf.className = 'badge badge-conflict';
       cf.textContent = 'ตรวจสอบ';
-      cf.title = 'OCR อ่านได้หลายแบบ: ' + (row.alternatives || []).join(', ');
+      const alts = row.alternatives || [];
+      cf.title = alts.length ? 'OCR อ่านได้หลายแบบ: ' + alts.join(', ') : 'ควรตรวจสอบตัวเลขนี้';
       main.appendChild(cf);
     }
     if (row.source === 'ocr') {
@@ -1984,7 +2013,8 @@ function renderNearMiss() {
       text.textContent = value;
       const len = document.createElement('span');
       len.className = 'muted';
-      len.textContent = '(' + value.length + ' หลัก)';
+      const single = (img.nearSingle || []).includes(value);
+      len.textContent = single ? '(อ่านได้จากรอบเดียว)' : '(' + value.length + ' หลัก)';
       const badge = document.createElement('span');
       badge.className = 'badge badge-img';
       badge.textContent = 'รูป ' + (i + 1);
@@ -1996,7 +2026,7 @@ function renderNearMiss() {
       btn.disabled = used;
       btn.setAttribute('aria-label', 'เพิ่มตัวเลข ' + value + ' จากรูปที่ ' + (i + 1) + ' เข้าในรายการ');
       btn.addEventListener('click', () => {
-        state.rows.push({ id: state.nextRowId++, value, checked: true, source: 'manual', imageIndex: null, edited: false, nearKey: key });
+        state.rows.push({ id: state.nextRowId++, value, checked: true, source: 'manual', imageIndex: null, edited: false, conflict: true, alternatives: [], nearKey: key });
         orderRows();
         render();
         toast('เพิ่มแถวแล้ว แก้ไขให้ครบ 10 หลักในรายการ');
