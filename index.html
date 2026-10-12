@@ -652,6 +652,12 @@ function applyOcrSelection(rows, target) {
   return rows;
 }
 
+// The legacy OCR engine reads Thai script as runs of '1' (e.g. "1111111111"). A 10-digit run with
+// 7 or more ones is not a real set, so it is reported as a near miss instead of an exact value.
+function isLegacyJunkRun(run) {
+  return (run.match(/1/g) || []).length >= 7;
+}
+
 function extractNumbers(text, fixConfusions) {
   const exact = [];
   const nearMiss = [];
@@ -662,7 +668,8 @@ function extractNumbers(text, fixConfusions) {
     const runs = line.match(/\d+/g) || [];
     for (const run of runs) {
       if (run.length === 10) {
-        exact.push(run);
+        if (isLegacyJunkRun(run)) nearMiss.push(run);
+        else exact.push(run);
       } else if (run.length === 8 || run.length === 9 || run.length === 11 || run.length === 12) {
         nearMiss.push(run);
       }
@@ -767,30 +774,25 @@ function buildFileStamp(d) {
   return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
 }
 
-// OCR scales: base reads the image at up to 4000px long side, legacy is the old 2000-4000px upscale,
-// mid is 1.6x base. Each scale is clamped so the canvas long side stays <= OCR_CANVAS_CLAMP.
-// Mid is dropped when its canvas long side would exceed OCR_MID_MAX_SIDE (large phone photos).
-const OCR_BASE_SIDE = 4000;
-const OCR_LEGACY_MIN = 2000;
-const OCR_LEGACY_MAX = 4000;
-const OCR_MID_FACTOR = 1.6;
-const OCR_MID_MAX_SIDE = 4000;
-const OCR_CANVAS_CLAMP = 6000;
+// OCR scales for one image, from its long side: the canvas long side is aimed at 1000px, at 1400px
+// and at 4000px (the full read, capped at 1). Each scale is capped at OCR_SCALE_MAX, and a scale
+// within 0.05 of an earlier one is dropped so the same canvas is not read twice.
+const OCR_SIDE_SMALL = 1000;
+const OCR_SIDE_MID = 1400;
+const OCR_SIDE_FULL = 4000;
+const OCR_SCALE_MAX = 4;
 
-// Returns the list of scales to OCR one image at, in the order [base, legacy, mid], deduped within 0.05.
+// Returns the scales to OCR one image at, in order: [1000/L, 1400/L, min(1, 4000/L)].
 function ocrScales(longSide) {
   if (!(longSide > 0)) return [1];
-  const clamp = (s) => Math.min(s, OCR_CANVAS_CLAMP / longSide);
-  const baseRaw = Math.min(1, OCR_BASE_SIDE / longSide);
-  const midRaw = baseRaw * OCR_MID_FACTOR;
-  const candidates = [
-    baseRaw,
-    Math.min(OCR_LEGACY_MAX, Math.max(OCR_LEGACY_MIN, longSide)) / longSide
+  const raw = [
+    OCR_SIDE_SMALL / longSide,
+    OCR_SIDE_MID / longSide,
+    Math.min(1, OCR_SIDE_FULL / longSide)
   ];
-  if (longSide * midRaw <= OCR_MID_MAX_SIDE) candidates.push(midRaw);
   const out = [];
-  for (const raw of candidates) {
-    const s = clamp(raw);
+  for (const r of raw) {
+    const s = Math.min(OCR_SCALE_MAX, r);
     if (!out.some((o) => Math.abs(o - s) < 0.05)) out.push(s);
   }
   return out;
@@ -1565,8 +1567,12 @@ function getWorker() {
     state.workerPromise = (async () => {
       // Engine and language data ship in ./vendor so OCR needs no third-party fetches.
       // worker-wrap.js serves the language data from base64 text (see that file).
+      // OEM 0 = legacy Tesseract engine (TESSERACT_ONLY), not the LSTM engine. The LSTM engine read the
+      // bold 5 on SIM-card labels as 6 at every scale, PSM and model tried. The legacy engine read them
+      // correctly, and with the multi-scale voting in mergePasses it was also faster. It needs the
+      // legacy+LSTM language data (eng.traineddata 4.0.0), which is what vendor/ ships.
       const vendor = new URL('vendor/', location.href).href;
-      const worker = await Tesseract.createWorker('eng', 1, {
+      const worker = await Tesseract.createWorker('eng', 0, {
         logger: handleOcrLog,
         workerPath: vendor + 'worker-wrap.js',
         workerBlobURL: false, // the wrapper resolves its siblings from its own URL
