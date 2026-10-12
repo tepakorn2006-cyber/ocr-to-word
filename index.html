@@ -19,7 +19,7 @@
     --accent-soft: #e8efff;
     --success: #15803d; --success-bg: #e7f6ec;
     --warning: #8a5a00; --warning-bg: #fff5d6;
-    --error: #b42318;   --error-bg: #fdeceb;
+    --error: #b42318;   --error-bg: #fdeceb; --danger-solid: #b42318; --danger-solid-text: #ffffff;
     --info: #1d4ed8;    --info-bg: #e8efff;
     --conflict: #92400e; --conflict-bg: #fef3c7;
     --radius: 14px;
@@ -40,7 +40,7 @@
       --accent-soft: #1d2a47;
       --success: #6fd08f; --success-bg: #11301e;
       --warning: #f1c65a; --warning-bg: #33290f;
-      --error: #ff8a80;   --error-bg: #3a1717;
+      --error: #ff8a80;   --error-bg: #3a1717; --danger-solid: #ff8a80; --danger-solid-text: #0b1220;
       --info: #8fb0ff;    --info-bg: #1d2a47;
       --conflict: #fcd34d; --conflict-bg: #3b2a08;
       --shadow: none;
@@ -57,7 +57,7 @@
     --accent-soft: #1d2a47;
     --success: #6fd08f; --success-bg: #11301e;
     --warning: #f1c65a; --warning-bg: #33290f;
-    --error: #ff8a80;   --error-bg: #3a1717;
+    --error: #ff8a80;   --error-bg: #3a1717; --danger-solid: #ff8a80; --danger-solid-text: #0b1220;
     --info: #8fb0ff;    --info-bg: #1d2a47;
     --conflict: #fcd34d; --conflict-bg: #3b2a08;
     --shadow: none;
@@ -179,6 +179,7 @@
 
   .field-inline { display: grid; gap: 6px; margin-top: 10px; }
   .field-inline label { font-size: .95rem; }
+  #group-preview.field-error { color: var(--error); }
   input[type="number"] {
     font: inherit;
     padding: 8px 10px;
@@ -327,7 +328,7 @@
   }
   .btn-block { width: 100%; margin-top: 8px; }
   .btn-ok { background: var(--primary); color: var(--primary-text); border-color: transparent; font-weight: 600; }
-  .btn-ok.danger { background: var(--error); color: #fff; }
+  .btn-ok.danger { background: var(--danger-solid); color: var(--danger-solid-text); }
   .image-section { margin-top: 14px; display: grid; gap: 8px; }
   .image-toolbar { margin: 0; justify-content: space-between; align-items: center; }
   .thumb-grid {
@@ -427,9 +428,9 @@
       <h2 id="h-upload">1. อัปโหลดรูปภาพ</h2>
       <div id="dropzone" class="dropzone">
         <p>ลากไฟล์รูปมาวางที่นี่ หรือกด Ctrl+V เพื่อวางรูปจากคลิปบอร์ด</p>
-        <p class="muted">รองรับ JPG, JPEG, PNG, WEBP (เลือกได้หลายรูป)</p>
+        <p class="muted">รองรับ JPG, PNG, WEBP (รวมไฟล์ .jfif) · เลือกได้หลายรูป</p>
         <button type="button" id="pick-btn" class="btn">เพิ่มรูป</button>
-        <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp" multiple hidden aria-label="เลือกไฟล์รูปภาพ">
+        <input type="file" id="file-input" accept="image/*,.jfif" multiple hidden aria-label="เลือกไฟล์รูปภาพ">
       </div>
       <p id="upload-error" class="alert error" role="alert" hidden></p>
 
@@ -489,7 +490,7 @@
         <div class="field-inline">
           <label for="group-label">ข้อความหัวกลุ่ม</label>
           <input type="text" id="group-label" value="กลุ่มที่" maxlength="60" autocomplete="off">
-          <p id="group-preview" class="muted"></p>
+          <p id="group-preview" class="muted" role="status" aria-live="polite"></p>
         </div>
       </fieldset>
 
@@ -541,7 +542,7 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="vendor/jszip/jszip.min.js"></script>
 <script src="vendor/paddle/ort.wasm.min.js"></script>
 
 <script>
@@ -576,6 +577,40 @@ function isValidSet(value) {
   return typeof value === 'string' && /^\d{10}$/.test(value);
 }
 
+// Text of a row value input: digits only, at most 10. Cleaning happens before the cut, so a pasted
+// "081-234-5678" is read in full.
+function cleanSetInput(s) {
+  return String(s == null ? '' : s).replace(/\D/g, '').slice(0, 10);
+}
+
+// The row value after an edit the browser has applied. raw: the input text, caret: its caret position, inputType: the
+// input event type. A typed digit that would make more than 10 digits is rejected: the caller restores the previous
+// value and caret. Otherwise the text is cleaned (cleanSetInput) and the caret moves back by the non-digits removed
+// before it.
+function cleanSetEdit(raw, caret, inputType) {
+  const text = String(raw == null ? '' : raw);
+  if (inputType === 'insertText' && text.replace(/\D/g, '').length > 10) {
+    return { reject: true, value: '', caret: 0 };
+  }
+  const pos = Math.max(0, Math.min(text.length, caret == null ? text.length : caret));
+  // Deleting never cuts to 10: an 11-12 digit near-miss row must lose only the digit the user removed.
+  const value = /^delete/.test(inputType || '') ? text.replace(/\D/g, '') : cleanSetInput(text);
+  return { reject: false, value, caret: Math.min(text.slice(0, pos).replace(/\D/g, '').length, value.length) };
+}
+
+// Whether a paste into this target is text entry: a text, number or search field, a textarea or editable text.
+// Radio chips, checkboxes, buttons and file inputs are not text entry.
+function isTextEntryTarget(t) {
+  if (!t) return false;
+  return t.tagName === 'TEXTAREA' || !!t.isContentEditable ||
+    (t.tagName === 'INPUT' && !/^(checkbox|radio|button|submit|reset|file|range|color|image)$/i.test(t.type));
+}
+
+// How long a toast stays: 1.5 s plus 70 ms per character, between 2.8 s and 10 s.
+function toastDurationMs(message) {
+  return Math.min(10000, Math.max(2800, 1500 + String(message == null ? '' : message).length * 70));
+}
+
 // Maximal runs of characters that OCR may have confused with digits.
 const CONFUSABLE_RUN_RE = /[0-9OoQDIl|i!ZzSsBG]+/g;
 
@@ -600,10 +635,13 @@ function fixConfusionsInLine(line) {
 }
 
 // Joins digit groups separated by single '-' or ' ' within one maximal sequence.
-// Exact: a greedy window of groups totalling 10 digits, >= 2 groups, every group >= 2 digits,
-// first group >= 3 digits. Near miss: the whole sequence (>= 2 groups, every group >= 2 digits)
-// totalling 8, 9, 11 or 12 digits is joined so it is reported as one number.
-// Sequence boundaries (non-digit, non-separator) keep results from touching other digits.
+// A run of 10 or more digits is a hard separator: it is never merged or joined, and the groups on each side of it
+// are merged on their own. The plain \d+ scan reads the run itself.
+// Within one side (groups only, no long run):
+//   Exact: a greedy window of groups totalling 10 digits, >= 2 groups, every group >= 2 digits, first group >= 3 digits.
+//   Near miss: only when the side has no exact window, and the whole side (>= 2 groups, every group >= 2 digits)
+//   totals 8, 9, 11 or 12 digits; then it is joined so it is reported as one number.
+// Sequence boundaries (non-digit, non-separator) and the separators between parts are kept as they are.
 function mergeSplitSequence(seq) {
   const runs = [];
   const re = /\d+/g;
@@ -611,33 +649,57 @@ function mergeSplitSequence(seq) {
   while ((m = re.exec(seq)) !== null) {
     runs.push({ start: m.index, end: m.index + m[0].length, digits: m[0] });
   }
-  const allGroupsOk = runs.length >= 2 && runs.every((r) => r.digits.length >= 2);
-  const wholeTotal = runs.reduce((s, r) => s + r.digits.length, 0);
-  if (allGroupsOk && [8, 9, 11, 12].includes(wholeTotal)) {
-    return runs.map((r) => r.digits).join('');
+  // Replacements {start, end, text} over seq, in order. Text between them, separators included, is copied as is.
+  const replacements = [];
+  let part = [];
+  const flush = () => {
+    replacements.push(...groupReplacements(part));
+    part = [];
+  };
+  for (const r of runs) {
+    if (r.digits.length >= 10) flush();
+    else part.push(r);
   }
+  flush();
   let out = '';
   let pos = 0;
+  for (const rep of replacements) {
+    out += seq.slice(pos, rep.start) + rep.text;
+    pos = rep.end;
+  }
+  return out + seq.slice(pos);
+}
+
+// Replacements for one side of a sequence: runs of 1 to 9 digits only, in order.
+// Exact windows come first; the near-miss join is used only when the side has no exact window.
+function groupReplacements(part) {
+  if (part.length < 2) return [];
+  const windows = [];
   let i = 0;
-  while (i < runs.length) {
+  while (i < part.length) {
     let total = 0;
     let j = i;
-    while (j < runs.length && total + runs[j].digits.length <= 10) {
-      total += runs[j].digits.length;
+    while (j < part.length && total + part[j].digits.length <= 10) {
+      total += part[j].digits.length;
       j++;
     }
-    const group = runs.slice(i, j);
+    const group = part.slice(i, j);
     const ok = total === 10 && group.length >= 2 &&
       group.every((r) => r.digits.length >= 2) && group[0].digits.length >= 3;
     if (ok) {
-      out += seq.slice(pos, runs[i].start) + group.map((r) => r.digits).join('');
-      pos = runs[j - 1].end;
+      windows.push({ start: part[i].start, end: part[j - 1].end, text: group.map((r) => r.digits).join('') });
       i = j;
     } else {
       i++;
     }
   }
-  return out + seq.slice(pos);
+  if (windows.length > 0) return windows;
+  const allGroupsOk = part.every((r) => r.digits.length >= 2);
+  const total = part.reduce((s, r) => s + r.digits.length, 0);
+  if (allGroupsOk && [8, 9, 11, 12].includes(total)) {
+    return [{ start: part[0].start, end: part[part.length - 1].end, text: part.map((r) => r.digits).join('') }];
+  }
+  return [];
 }
 
 // Sets checked on OCR rows by their position among OCR rows only (manual rows untouched).
@@ -653,10 +715,24 @@ function applyOcrSelection(rows, target) {
   return rows;
 }
 
-// The legacy OCR engine reads Thai script as runs of '1' (e.g. "1111111111"). A 10-digit run with
-// 7 or more ones is not a real set, so it is reported as a near miss instead of an exact value.
-function isLegacyJunkRun(run) {
-  return (run.match(/1/g) || []).length >= 7;
+// The quantity rule for the rows of one newly read image (newRows: the row objects just added, in row order).
+// The quota left for them is target minus every checked OCR row outside the new block, wherever it sits, so the
+// total of checked OCR rows never goes above the target. The new rows fill that room in order.
+// Other rows keep their checked flags. target: a count, Infinity for "all" (every new row checked), or null for an
+// invalid custom value (no new row checked).
+function applySelectionToNewRows(rows, newRows, target) {
+  const isNew = new Set(newRows);
+  let outside = 0;
+  for (const row of rows) {
+    if (row.source === 'ocr' && !isNew.has(row) && row.checked) outside++;
+  }
+  let room = 0;
+  if (target === Infinity) room = Infinity;
+  else if (target !== null) room = target - outside;
+  newRows.forEach((row, k) => {
+    row.checked = k < room;
+  });
+  return rows;
 }
 
 function extractNumbers(text, fixConfusions) {
@@ -669,8 +745,7 @@ function extractNumbers(text, fixConfusions) {
     const runs = line.match(/\d+/g) || [];
     for (const run of runs) {
       if (run.length === 10) {
-        if (isLegacyJunkRun(run)) nearMiss.push(run);
-        else exact.push(run);
+        exact.push(run);
       } else if (run.length === 8 || run.length === 9 || run.length === 11 || run.length === 12) {
         nearMiss.push(run);
       }
@@ -881,6 +956,28 @@ function mergePasses(passes) {
   merged.sort((a, b) => (a.key - b.key) || (a.order - b.order));
   return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }) =>
     ({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }));
+}
+
+// Like withTimeout, but the deadline is an inactivity limit. work(touch) runs; each touch() re-arms the deadline,
+// so the promise rejects with Error(message) only after ms with no touch. The timer is cleared once it settles.
+function withInactivityTimeout(work, ms, message) {
+  let timer = null;
+  let done = false;
+  let rejectDeadline;
+  const deadline = new Promise((_, reject) => { rejectDeadline = reject; });
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => rejectDeadline(new Error(message)), ms);
+  };
+  const touch = () => {
+    if (!done) arm();
+  };
+  arm();
+  const workP = new Promise((resolve) => resolve(work(touch)));
+  return Promise.race([workP, deadline]).finally(() => {
+    done = true;
+    clearTimeout(timer);
+  });
 }
 
 // Lowest numeric score of a and b; null when neither is a number.
@@ -1162,15 +1259,29 @@ function withTimeout(promise, ms, message) {
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
+
+// Image types by content. A match needs every byte in range, so short input never matches.
+const HEIC_BRANDS = ['heic', 'heix', 'mif1', 'msf1', 'hevc'];
+const asciiBytes = (s) => Array.from(s, (c) => c.charCodeAt(0));
+function bytesMatchAt(bytes, offset, expected) {
+  if (!bytes || bytes.length < offset + expected.length) return false;
+  return expected.every((b, i) => bytes[offset + i] === b);
+}
+
+// Decides the image type from the first bytes of a file (a Uint8Array of up to 12 bytes).
+// Returns 'jpeg', 'png', 'webp', 'heic', or null. The file name and MIME type are not used.
+function sniffImageType(bytes) {
+  if (bytesMatchAt(bytes, 0, [0xFF, 0xD8, 0xFF])) return 'jpeg';
+  if (bytesMatchAt(bytes, 0, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) return 'png';
+  if (bytesMatchAt(bytes, 0, asciiBytes('RIFF')) && bytesMatchAt(bytes, 8, asciiBytes('WEBP'))) return 'webp';
+  if (bytesMatchAt(bytes, 4, asciiBytes('ftyp')) &&
+      HEIC_BRANDS.some((brand) => bytesMatchAt(bytes, 8, asciiBytes(brand)))) return 'heic';
+  return null;
+}
 /* @pure-end */
 
 /* ---------- DOM and state ---------- */
 
-const ACCEPTED_TYPES = {
-  'image/jpeg': ['jpg', 'jpeg'],
-  'image/png': ['png'],
-  'image/webp': ['webp']
-};
 const MIME_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 const PRESET_COUNTS = { '10': 10, '50': 50, '100': 100 };
 const GROUP_PRESETS = { '5': 5, '10': 10 };
@@ -1231,7 +1342,9 @@ const state = {
   runId: 0,
   // Set by the stop button; the run in progress then ends silently.
   cancelRequested: false,
-  running: false
+  running: false,
+  // Ids of the images whose raw-OCR <details> is open. Kept here so a rebuild of the list does not collapse them.
+  rawOpenIds: new Set()
 };
 
 /* ---------- small helpers ---------- */
@@ -1295,7 +1408,8 @@ function confirmDialog(message, opts) {
       document.addEventListener('keydown', onKey, true);
       document.body.appendChild(root);
     }
-    okBtn.focus();
+    // A danger confirm starts on Cancel, so a stray Enter does not confirm the destructive action.
+    (o.danger ? cancelBtn : okBtn).focus();
   });
 }
 
@@ -1333,7 +1447,7 @@ function toast(message) {
   els.toast.textContent = message;
   els.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { els.toast.hidden = true; }, 2800);
+  toastTimer = setTimeout(() => { els.toast.hidden = true; }, toastDurationMs(message));
 }
 
 function formatBytes(n) {
@@ -1372,30 +1486,66 @@ function markEdited(row) {
 
 /* ---------- images ---------- */
 
-function validateImageFile(file) {
-  const allowedExts = ACCEPTED_TYPES[file.type];
-  if (!allowedExts) {
-    return 'รองรับเฉพาะไฟล์ JPG, JPEG, PNG และ WEBP เท่านั้น';
-  }
-  const name = file.name || '';
-  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
-  if (!allowedExts.includes(ext)) {
-    return 'นามสกุลไฟล์ไม่ตรงกับชนิดของรูปภาพ (รองรับ JPG, JPEG, PNG, WEBP)';
-  }
-  return null;
+// Reads a small blob as an ArrayBuffer through FileReader. Used where Blob.prototype.arrayBuffer is missing.
+function readBlobAsArrayBuffer(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsArrayBuffer(blob);
+  });
 }
 
-// Appends valid images to the list; invalid ones are skipped and named in a toast.
-function acceptFiles(files) {
+// Reads the first 12 bytes of a file and sniffs its type. A file that cannot be read counts as unknown.
+async function sniffFile(file) {
+  try {
+    const head = file.slice(0, 12);
+    const bytes = typeof Blob.prototype.arrayBuffer === 'function'
+      ? await head.arrayBuffer()
+      : await readBlobAsArrayBuffer(head);
+    return sniffImageType(new Uint8Array(bytes));
+  } catch (err) {
+    return null;
+  }
+}
+
+// Calls to acceptFiles run one after another, so concurrent drops and pastes keep a deterministic order.
+// A failed call is logged and does not stop the calls queued after it.
+let acceptQueue = Promise.resolve();
+function enqueueAccept(files) {
+  acceptQueue = acceptQueue.then(() => acceptFiles(files)).catch((err) => {
+    console.error('[OCR] acceptFiles:', err);
+    showUploadError('เพิ่มรูปไม่สำเร็จ กรุณาลองใหม่');
+    render();
+  });
+  return acceptQueue;
+}
+
+// Appends the images in order. Types are decided by content, so a JPEG named .jfif, one with no
+// extension, or one with an empty MIME type is accepted. HEIC and other files are skipped with a toast.
+async function acceptFiles(files) {
   if (state.running) {
     toast('กำลังประมวลผล กรุณารอสักครู่');
     return;
   }
+  const heic = [];
   const skipped = [];
   let added = 0;
+  let blockedByRun = false;
   for (const file of files) {
-    if (validateImageFile(file)) {
-      skipped.push(file.name || 'ไม่ทราบชื่อไฟล์');
+    const name = file.name || 'ไม่ทราบชื่อไฟล์';
+    // A run may have started while this file was being sniffed. Then nothing more is added.
+    const kind = await sniffFile(file);
+    if (state.running) {
+      blockedByRun = true;
+      break;
+    }
+    if (kind === 'heic') {
+      heic.push(name);
+      continue;
+    }
+    if (!kind) {
+      skipped.push(name);
       continue;
     }
     state.images.push({
@@ -1415,9 +1565,16 @@ function acceptFiles(files) {
     added++;
   }
   if (added > 0) showUploadError('');
-  if (skipped.length > 0) {
-    toast('ข้ามไฟล์ที่ไม่รองรับ: ' + skipped.join(', '));
+  // One toast for everything that was not added, so no notice hides another.
+  const notices = [];
+  if (blockedByRun) notices.push('กำลังประมวลผล กรุณารอสักครู่ · ไฟล์ที่เหลือยังไม่ถูกเพิ่ม');
+  if (heic.length > 0) {
+    notices.push('ไฟล์ HEIC ยังไม่รองรับ: ' + heic.join(', ') + ' — กรุณาแปลงเป็น JPG หรือส่งรูปผ่านแอปที่แปลงให้อัตโนมัติ');
   }
+  if (skipped.length > 0) {
+    notices.push('ข้ามไฟล์ที่ไม่รองรับ: ' + skipped.join(', '));
+  }
+  if (notices.length > 0) toast(notices.join(' · '));
   if (added > 0) render();
 }
 
@@ -1446,8 +1603,8 @@ async function removeImage(img) {
   }
   if (state.images.length === 0) showUploadError('');
   if (!state.rows.some((r) => r.source === 'ocr')) state.ocrDirty = false;
+  // The checked flags stay as they are: the quantity rule is not re-run for a removal.
   orderRows();
-  applySelection();
   render();
 }
 
@@ -1486,9 +1643,20 @@ function moveImage(img, delta) {
     if (r.imageIndex === i) r.imageIndex = j;
     else if (r.imageIndex === j) r.imageIndex = i;
   }
+  // The checked flags stay as they are: the quantity rule is not re-run for a move.
   orderRows();
-  applySelection();
   render();
+  focusImageMove(img, delta);
+}
+
+// After a move, focus stays on the moved image's button for that direction. When the image is now at that end of
+// the list, the other move button gets the focus instead.
+function focusImageMove(img, delta) {
+  const pick = (dir) => els.imageGrid.querySelector('button[data-image-id="' + img.id + '"][data-move="' + dir + '"]');
+  const same = pick(delta < 0 ? 'up' : 'down');
+  const other = pick(delta < 0 ? 'down' : 'up');
+  const target = same && !same.disabled ? same : other;
+  if (target && !target.disabled) target.focus();
 }
 
 function bindUpload() {
@@ -1496,7 +1664,7 @@ function bindUpload() {
   els.fileInput.addEventListener('change', (e) => {
     const files = Array.from((e.target.files) || []);
     e.target.value = ''; // allows picking the same file again later
-    if (files.length) acceptFiles(files);
+    if (files.length) enqueueAccept(files);
   });
 
   const dz = els.dropzone;
@@ -1515,7 +1683,7 @@ function bindUpload() {
     e.preventDefault();
     dz.classList.remove('dragover');
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-    if (files.length) acceptFiles(files);
+    if (files.length) enqueueAccept(files);
     else showUploadError('ไม่พบไฟล์ในสิ่งที่ลาก');
   });
   // Stop the browser from opening a file dropped outside the zone.
@@ -1523,6 +1691,9 @@ function bindUpload() {
   window.addEventListener('drop', (e) => e.preventDefault());
 
   document.addEventListener('paste', (e) => {
+    // Text entry keeps its own paste. Elsewhere (radio chips, checkboxes, the page) an image paste is taken even when
+    // the clipboard also carries text, since screenshot tools often put both on it.
+    if (isTextEntryTarget(e.target)) return;
     const items = Array.from((e.clipboardData && e.clipboardData.items) || [])
       .filter((it) => it.kind === 'file' && it.type.startsWith('image/'));
     if (items.length === 0) return;
@@ -1536,7 +1707,7 @@ function bindUpload() {
       const suffix = items.length > 1 ? '-' + (k + 1) : '';
       files.push(new File([blob], 'clipboard-' + stamp + suffix + '.' + ext, { type: blob.type }));
     });
-    if (files.length) acceptFiles(files);
+    if (files.length) enqueueAccept(files);
   });
 
   els.clearImagesBtn.addEventListener('click', clearAllImages);
@@ -1595,14 +1766,18 @@ function updateGroupPreview() {
   const size = getGroupSize();
   els.groupCustomWrap.hidden = mode !== 'custom';
   let text;
+  let invalid = false;
   if (mode === 'none') {
     text = 'ไม่แบ่งกลุ่ม: ส่งออกตัวเลขต่อเนื่องกัน';
   } else if (!size) {
-    text = 'กรอกจำนวนต่อกลุ่มอย่างน้อย 1 เพื่อแบ่งกลุ่ม';
+    text = 'กรุณาใส่จำนวนเต็มตั้งแต่ 1 ขึ้นไป (ตอนนี้จะไม่แบ่งกลุ่ม)';
+    invalid = true;
   } else {
     text = 'ตัวอย่างหัวกลุ่ม: ' + formatGroupLabel(groupOpts().labelPrefix, { index: 1, start: 1, end: size });
   }
-  els.groupPreview.textContent = text;
+  // Only touch the live region when the text changes, so screen readers don't re-announce it on every render.
+  if (els.groupPreview.textContent !== text) els.groupPreview.textContent = text;
+  els.groupPreview.classList.toggle('field-error', invalid);
 }
 
 function onGroupSettingsChange() {
@@ -1633,16 +1808,21 @@ function orderRows() {
   });
 }
 
+// Adds the OCR rows of one image (unchecked) and returns them.
 function addOcrRows(index) {
   const img = state.images[index];
+  const added = [];
   img.exact.forEach((value, k) => {
     const alternatives = (img.alts && img.alts[k]) || [];
     const lowConfidence = !!(img.lowConf && img.lowConf[k]);
-    state.rows.push({
+    const row = {
       id: state.nextRowId++, value, checked: false, source: 'ocr', imageIndex: index, edited: false,
       conflict: alternatives.length > 0 || lowConfidence, alternatives: alternatives.slice(), lowConfidence
-    });
+    };
+    state.rows.push(row);
+    added.push(row);
   });
+  return added;
 }
 
 // Builds the image's numbers from its stored OCR passes and adds its OCR rows.
@@ -1656,9 +1836,10 @@ function finishImage(img) {
   img.nearSingle = res.nearSingle;
   img.status = 'done';
   img.error = '';
-  addOcrRows(state.images.indexOf(img));
+  const added = addOcrRows(state.images.indexOf(img));
   orderRows();
-  applySelection();
+  // Only the new rows take the quantity rule; rows that were already there keep their flags.
+  applySelectionToNewRows(state.rows, added, getTargetCount());
 }
 
 /* ---------- OCR ---------- */
@@ -1691,7 +1872,8 @@ const REC_STD = [0.5, 0.5, 0.5];
 const UNCLIP_RATIO = 1.5;
 const MODEL_LOAD_ERROR = 'โหลดโมเดล OCR ไม่สำเร็จ กรุณารีเฟรชหน้าแล้วลองใหม่ (ต้องเปิดผ่านเว็บไซต์ ไม่ใช่เปิดไฟล์จากเครื่องโดยตรง)';
 const MODEL_LOADING_TEXT = 'กำลังโหลดโมเดล OCR (ครั้งแรกประมาณ 27 MB)';
-// Deadlines: a load or an image that takes longer counts as failed, so a run cannot hang.
+// Deadlines: a load that takes longer than its limit counts as failed. An image has an inactivity limit: it fails
+// only after IMAGE_TIMEOUT_MS without progress (each finished box re-arms it), so a run cannot hang.
 const ENGINE_TIMEOUT_MS = 180000;
 const ENGINE_TIMEOUT_TEXT = 'โหลดโมเดล OCR นานเกินไป กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
 const IMAGE_TIMEOUT_MS = 120000;
@@ -1705,9 +1887,23 @@ class CancelledError extends Error {
 }
 // Yields one task so the progress update can paint between heavy inference runs.
 // Not requestAnimationFrame: it never fires in a hidden tab, which would stall reading.
-const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+// A hidden tab cannot paint, so it only needs a yield. Background tabs clamp setTimeout to 1 s, but not a
+// MessageChannel message, so the hidden branch yields through one.
+function yieldMessage() {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+const nextFrame = () => document.visibilityState === 'visible' ? new Promise((r) => setTimeout(r, 0)) : yieldMessage();
 
 let enginePromise = null;
+// Set once getEngine has resolved; until then a run shows the model-loading text.
+let engineReady = false;
 
 // Loads both sessions and the keys once. A failed load is not kept, so the next run tries again.
 // A load that runs past ENGINE_TIMEOUT_MS counts as failed. If any part fails, the sessions that did load are
@@ -1737,7 +1933,10 @@ function getEngine() {
         throw err;
       }
     })();
-    enginePromise = withTimeout(loadP, ENGINE_TIMEOUT_MS, ENGINE_TIMEOUT_TEXT).catch((err) => {
+    enginePromise = withTimeout(loadP, ENGINE_TIMEOUT_MS, ENGINE_TIMEOUT_TEXT).then((eng) => {
+      engineReady = true;
+      return eng;
+    }, (err) => {
       enginePromise = null;
       // A load that finishes after the deadline is released, so its sessions are not leaked.
       loadP.then((eng) => {
@@ -1833,6 +2032,7 @@ async function recognizeBox(m, src, b) {
 // Reads one image. Returns [{text, score, charScores, box: {x0, y0, x1, y1}}] in a rough reading order.
 // hooks.onDetect() runs before detection; hooks.onRecognize(k, m) runs before each of the m boxes (k from 1);
 // hooks.onRecognized(m) runs after the last box. Each progress update is painted (nextFrame) before the next run.
+// hooks.onProgress() runs after detection and after each box finishes; the caller re-arms its inactivity deadline there.
 // hooks.isCancelled() is checked after every await and before every hook; when it returns true, CancelledError is thrown.
 async function paddleRead(source, hooks) {
   const h = hooks || {};
@@ -1847,6 +2047,7 @@ async function paddleRead(source, hooks) {
   check();
   const boxes = await detectBoxes(m, source);
   check();
+  if (h.onProgress) h.onProgress();
   const items = [];
   for (let k = 0; k < boxes.length; k++) {
     check();
@@ -1856,6 +2057,7 @@ async function paddleRead(source, hooks) {
     const r = await recognizeBox(m, source, boxes[k]);
     check();
     if (r.text) items.push({ text: r.text, score: r.score, charScores: r.charScores, box: boxes[k] });
+    if (h.onProgress) h.onProgress();
   }
   check();
   if (h.onRecognized && boxes.length) h.onRecognized(boxes.length);
@@ -1869,14 +2071,17 @@ async function paddleRead(source, hooks) {
 
 // Reads one image in a single PaddleOCR pass. The source is loaded once and released afterwards.
 // isCancelled() is checked along the way; a true result ends the read with CancelledError.
-async function readImagePasses(file, pos, total, isCancelled) {
+// onProgress() is called after detection and after each box, so the caller can re-arm its deadline.
+async function readImagePasses(file, pos, total, isCancelled, onProgress) {
   const cancelled = isCancelled || (() => false);
+  const progress = onProgress || (() => {});
   const source = await loadSource(file);
   try {
     if (cancelled()) throw new CancelledError();
     const head = 'รูปที่ ' + pos + '/' + total;
     const items = await paddleRead(source, {
       isCancelled: cancelled,
+      onProgress: progress,
       onDetect: () => showProgress(head + ' · กำลังหาตำแหน่งข้อความ', 0),
       // Box k is about to be read, so k - 1 boxes are done.
       onRecognize: (k, n) => showProgress(head + ' · กำลังอ่านข้อความ ' + k + '/' + n, (k - 1) / n),
@@ -1900,7 +2105,7 @@ async function startReading(targets) {
   updateControls();
   let okCount = 0;
   try {
-    if (!enginePromise) showProgress(MODEL_LOADING_TEXT, 0);
+    if (!engineReady) showProgress(MODEL_LOADING_TEXT, 0);
     try {
       await getEngine();
     } catch (err) {
@@ -1917,10 +2122,11 @@ async function startReading(targets) {
       render();
       showProgress('รูปที่ ' + pos + '/' + state.images.length + ' · กำลังหาตำแหน่งข้อความ', 0);
       // job.cancelled stops this image's in-flight work once its deadline has passed.
+      // The deadline is an inactivity limit: every finished box re-arms it (touch).
       const job = { cancelled: false };
       try {
-        const passes = await withTimeout(
-          readImagePasses(img.file, pos, state.images.length, () => job.cancelled || stale()),
+        const passes = await withInactivityTimeout(
+          (touch) => readImagePasses(img.file, pos, state.images.length, () => job.cancelled || stale(), touch),
           IMAGE_TIMEOUT_MS,
           IMAGE_TIMEOUT_TEXT
         );
@@ -1947,10 +2153,15 @@ async function startReading(targets) {
 // Ends the run for the UI: controls come back and the progress bar goes. Bumping the token makes any result still in
 // flight from the ended run be ignored.
 function endRunForUi() {
+  // The stop button is hidden once the run ends. A focus on it moves to the run button first.
+  const stopHadFocus = document.activeElement === els.stopBtn;
   state.runId++;
   state.running = false;
   hideProgress();
   render();
+  if (stopHadFocus && els.stopBtn.hidden) {
+    (els.runBtn.disabled ? els.rerunAllBtn : els.runBtn).focus();
+  }
 }
 
 // Stop button. The UI goes idle at once; the OCR call already in flight may still finish in the background, but its
@@ -1968,6 +2179,8 @@ function stopReading() {
 function onUnexpectedError(kind, err) {
   if (!state.running || err instanceof CancelledError) return;
   console.error('[OCR] ' + kind + ':', err);
+  // Images left as reading go back to wait, as stopReading does.
+  state.images.forEach((img) => { if (img.status === 'reading') img.status = 'wait'; });
   endRunForUi();
   setAlert('warning', 'เกิดข้อผิดพลาดระหว่างอ่านข้อความ ดูรายละเอียดในคอนโซล');
 }
@@ -2199,11 +2412,13 @@ function renderImages() {
     };
     const actions = document.createElement('div');
     actions.className = 'thumb-actions';
-    actions.append(
-      mk('▲', 'เลื่อนรูปที่ ' + (i + 1) + ' ขึ้น', '', locked || i === 0, () => moveImage(img, -1)),
-      mk('▼', 'เลื่อนรูปที่ ' + (i + 1) + ' ลง', '', locked || i === state.images.length - 1, () => moveImage(img, 1)),
-      mk('×', 'ลบรูปที่ ' + (i + 1), 'btn-danger', locked, () => removeImage(img))
-    );
+    const upBtn = mk('▲', 'เลื่อนรูปที่ ' + (i + 1) + ' ขึ้น', '', locked || i === 0, () => moveImage(img, -1));
+    upBtn.dataset.imageId = String(img.id);
+    upBtn.dataset.move = 'up';
+    const downBtn = mk('▼', 'เลื่อนรูปที่ ' + (i + 1) + ' ลง', '', locked || i === state.images.length - 1, () => moveImage(img, 1));
+    downBtn.dataset.imageId = String(img.id);
+    downBtn.dataset.move = 'down';
+    actions.append(upBtn, downBtn, mk('×', 'ลบรูปที่ ' + (i + 1), 'btn-danger', locked, () => removeImage(img)));
 
     card.append(head, thumb, name, meta, actions);
     els.imageGrid.appendChild(card);
@@ -2211,6 +2426,15 @@ function renderImages() {
 }
 
 function renderRows() {
+  // A rebuild during a run (render() runs per image) must not drop the focus of a row control, nor the caret of a
+  // row value being typed in. A control is identified by its row id and its kind.
+  const active = document.activeElement;
+  const focusedControl = active && active.dataset && active.dataset.rowControl && active.dataset.rowFor ? {
+    rowId: active.dataset.rowFor,
+    kind: active.dataset.rowControl,
+    start: active.selectionStart,
+    end: active.selectionEnd
+  } : null;
   els.rows.replaceChildren();
   state.rows.forEach((row, idx) => {
     const li = document.createElement('li');
@@ -2221,6 +2445,8 @@ function renderRows() {
     cb.type = 'checkbox';
     cb.checked = row.checked;
     cb.setAttribute('aria-label', 'เลือกชุดที่ ' + (idx + 1));
+    cb.dataset.rowFor = String(row.id);
+    cb.dataset.rowControl = 'check';
     cb.addEventListener('change', () => {
       row.checked = cb.checked;
       markEdited(row);
@@ -2239,15 +2465,34 @@ function renderRows() {
     input.type = 'text';
     input.className = 'value';
     input.inputMode = 'numeric';
-    input.maxLength = 10;
     input.autocomplete = 'off';
     input.value = row.value;
     input.id = 'val-' + row.id;
+    input.dataset.rowFor = String(row.id);
+    input.dataset.rowControl = 'value';
     input.setAttribute('aria-label', 'ตัวเลขชุดที่ ' + (idx + 1));
     input.setAttribute('aria-describedby', 'err-' + row.id);
-    input.addEventListener('input', () => {
-      const clean = input.value.replace(/\D/g, '');
-      if (clean !== input.value) input.value = clean;
+    // The caret before each edit (beforeinput runs before the value changes). Used to undo a rejected typed digit.
+    let caretBefore = null;
+    input.addEventListener('beforeinput', () => {
+      caretBefore = input.selectionStart;
+    });
+    input.addEventListener('input', (e) => {
+      const prevValue = row.value;
+      const prevCaret = caretBefore == null ? prevValue.length : caretBefore;
+      caretBefore = null;
+      // Edits are cleaned here. A typed digit beyond 10 digits is undone; a paste or a drop is cut to 10 digits.
+      const edit = cleanSetEdit(input.value, input.selectionStart, e.inputType);
+      if (edit.reject) {
+        input.value = prevValue;
+        input.setSelectionRange(prevCaret, prevCaret);
+        return;
+      }
+      if (edit.value !== input.value) {
+        input.value = edit.value;
+        input.setSelectionRange(edit.caret, edit.caret);
+      }
+      const clean = edit.value;
       if (clean !== row.value) {
         markEdited(row);
         if (row.conflict) {
@@ -2300,6 +2545,8 @@ function renderRows() {
     copyBtn.className = 'btn btn-small btn-copy-row';
     copyBtn.textContent = 'คัดลอก';
     copyBtn.setAttribute('aria-label', 'คัดลอกชุดที่ ' + (idx + 1));
+    copyBtn.dataset.rowFor = String(row.id);
+    copyBtn.dataset.rowControl = 'copy';
     copyBtn.addEventListener('click', async () => {
       const ok = await copyText(row.value);
       toast(ok ? 'คัดลอกแล้ว 1 ชุด' : 'คัดลอกไม่สำเร็จ');
@@ -2307,19 +2554,46 @@ function renderRows() {
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
-    delBtn.className = 'btn btn-small btn-danger';
+    delBtn.className = 'btn btn-small btn-danger btn-del-row';
     delBtn.textContent = 'ลบ';
     delBtn.setAttribute('aria-label', 'ลบแถวที่ ' + (idx + 1));
+    delBtn.dataset.rowFor = String(row.id);
+    delBtn.dataset.rowControl = 'delete';
     delBtn.addEventListener('click', () => {
       markEdited(row);
+      const at = state.rows.indexOf(row);
       state.rows = state.rows.filter((r) => r !== row);
       render();
+      focusAfterRowDelete(at);
     });
 
     li.append(cb, index, main, copyBtn, delBtn);
     els.rows.appendChild(li);
   });
   refreshRowMeta();
+  if (focusedControl) {
+    const el = els.rows.querySelector('li[data-row-id="' + focusedControl.rowId + '"] [data-row-control="' + focusedControl.kind + '"]');
+    if (el) {
+      el.focus({ preventScroll: true });
+      if (focusedControl.kind === 'value') {
+        try {
+          el.setSelectionRange(focusedControl.start, focusedControl.end);
+        } catch (e) {
+          // not a text field; the focus alone is enough
+        }
+      }
+    }
+  }
+}
+
+// After a row is deleted, focus goes to the delete button of the row that took its place, else of the row before
+// it, else to the add-row button.
+function focusAfterRowDelete(at) {
+  const target = state.rows[at] || state.rows[at - 1];
+  const li = target ? liFor(target) : null;
+  const btn = li ? li.querySelector('.btn-del-row') : null;
+  if (btn) btn.focus();
+  else els.addRow.focus();
 }
 
 function renderNearMiss() {
@@ -2372,6 +2646,11 @@ function renderRaw() {
   }
   done.forEach(({ img, i }) => {
     const d = document.createElement('details');
+    d.open = state.rawOpenIds.has(img.id);
+    d.addEventListener('toggle', () => {
+      if (d.open) state.rawOpenIds.add(img.id);
+      else state.rawOpenIds.delete(img.id);
+    });
     const s = document.createElement('summary');
     s.textContent = 'รูปที่ ' + (i + 1) + ' · ' + img.file.name;
     const pre = document.createElement('pre');
@@ -2399,6 +2678,10 @@ function updateSummary() {
   els.counters.textContent = counters;
 
   const msgs = [];
+  const qtyChecked = document.querySelector('input[name="qty"]:checked');
+  if (qtyChecked && qtyChecked.value === 'custom' && target === null) {
+    msgs.push('กรุณาใส่จำนวนเต็มตั้งแต่ 1 ขึ้นไป (ผลจากรูปจะไม่ถูกเลือกจนกว่าจะใส่จำนวนที่ถูกต้อง)');
+  }
   if (anyResult && !pending && x === 0) {
     msgs.push('ไม่พบชุดตัวเลข 10 หลักในรูปภาพ');
   } else if (anyResult && !pending && target !== null && target !== Infinity && x < target) {
@@ -2423,7 +2706,6 @@ function updateSummary() {
   els.copyWord.disabled = validSel === 0;
   els.downloadDocx.disabled = validSel === 0;
   els.selectToggle.disabled = state.rows.length === 0;
-  els.clearResults.disabled = state.rows.length === 0 && !anyResult;
 }
 
 function updateControls() {
@@ -2433,6 +2715,8 @@ function updateControls() {
   els.rerunAllBtn.disabled = busy || state.images.length === 0;
   els.clearImagesBtn.disabled = busy || state.images.length === 0;
   els.pickBtn.disabled = busy;
+  // Clearing the results is not allowed while a run is active.
+  els.clearResults.disabled = busy || (state.rows.length === 0 && !hasResult());
   // Stop is shown and enabled only while a run is active.
   els.stopBtn.hidden = !busy;
   els.stopBtn.disabled = !busy;
