@@ -468,10 +468,10 @@
       <fieldset>
         <legend>ลำดับผลลัพธ์</legend>
         <div class="chips" role="radiogroup" aria-label="ลำดับผลลัพธ์">
-          <label class="chip"><input type="radio" name="order" value="reading" checked><span>ตามลำดับการอ่าน</span></label>
-          <label class="chip"><input type="radio" name="order" value="rows"><span>เรียงตามบรรทัด (ซ้าย→ขวา)</span></label>
+          <label class="chip"><input type="radio" name="order" value="rows" checked><span>เรียงตามบรรทัด (ซ้าย→ขวา)</span></label>
+          <label class="chip"><input type="radio" name="order" value="columns"><span>เรียงตามคอลัมน์ (บน→ล่าง)</span></label>
         </div>
-        <p class="muted hint">ถ้าในรูปมี 2 ชุดต่อบรรทัด ให้เลือกเรียงตามบรรทัด</p>
+        <p class="muted hint">ถ้าในรูปมีหลายคอลัมน์ ให้เลือกเรียงตามคอลัมน์</p>
       </fieldset>
 
       <fieldset>
@@ -540,8 +540,8 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="vendor/paddle/ort.wasm.min.js"></script>
 
 <script>
 /* @pure-start */
@@ -774,30 +774,6 @@ function buildFileStamp(d) {
   return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
 }
 
-// OCR scales for one image, from its long side: one pass per target long side (px), scale = T / L.
-// Each scale is capped at OCR_SCALE_MAX. A scale whose canvas long side (round(L * s)) equals an
-// earlier one is dropped, so the same canvas is not read twice.
-const OCR_TARGET_SIDES = [600, 800, 1000, 1200, 1400, 1700];
-const OCR_SCALE_MAX = 4;
-const OCR_FULL_SIDE_MAX = 4000;
-
-// Returns the scales to OCR one image at, in order: fixed target long sides, then the
-// image's own size (capped at 4000px). The own-size pass is what reads bordered tables.
-function ocrScales(longSide) {
-  if (!(longSide > 0)) return [1];
-  const out = [];
-  const seenSides = new Set();
-  const targets = OCR_TARGET_SIDES.concat([Math.min(longSide, OCR_FULL_SIDE_MAX)]);
-  for (const t of targets) {
-    const s = Math.min(OCR_SCALE_MAX, t / longSide);
-    const side = Math.round(longSide * s);
-    if (seenSides.has(side)) continue;
-    seenSides.add(side);
-    out.push(s);
-  }
-  return out;
-}
-
 // Merges OCR candidates from several passes into one list in final reading order.
 // passes: array of arrays of {v, x, y, lh}, each pass in its own reading order.
 // Returns [{value, conflict, alternatives, votes, support}]: votes = passes whose value is the winner,
@@ -834,11 +810,14 @@ function mergePasses(passes) {
         g.items.push({ v: c.v, pass: passIdx });
         g.passes.add(passIdx);
         if (passIdx === primary) g.primaryIdx = idx;
+        g.minScore = lowerScore(g.minScore, c.score);
       } else {
         groups.push({
           y: c.y,
           x: c.x,
           lh: c.lh,
+          w: c.w,
+          minScore: lowerScore(null, c.score),
           items: [{ v: c.v, pass: passIdx }],
           passes: new Set([passIdx]),
           primaryIdx: passIdx === primary ? idx : null,
@@ -894,13 +873,19 @@ function mergePasses(passes) {
     return {
       value, conflict: alternatives.length > 0, alternatives,
       votes: best.count, support: g.passes.size,
-      y: g.y, x: g.x, lh: g.lh, key: g.key, order: g.order
+      y: g.y, x: g.x, lh: g.lh, w: g.w, minScore: g.minScore, key: g.key, order: g.order
     };
   });
 
   merged.sort((a, b) => (a.key - b.key) || (a.order - b.order));
-  return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh }) =>
-    ({ value, conflict, alternatives, votes, support, y, x, lh }));
+  return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }) =>
+    ({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }));
+}
+
+// Lowest numeric score of a and b; null when neither is a number.
+function lowerScore(a, b) {
+  if (typeof b !== 'number') return a;
+  return typeof a === 'number' ? Math.min(a, b) : b;
 }
 
 // Re-orders merged entries ({y, x, lh}) into rows: top to bottom, then left to right inside a row.
@@ -917,27 +902,149 @@ function sortByRows(entries) {
   return rows.flatMap((r) => r.items.sort((a, b) => a.x - b.x));
 }
 
-// Flattens Tesseract block output into lines: [{text, bbox, words: [{text, bbox}]}] in reading order.
-function flattenLines(data) {
+// Re-orders merged entries ({x, y, w, lh}) into columns: columns left to right (by mean x), top to bottom inside
+// a column. Two entries share a column when their x-ranges overlap by more than half the narrower width.
+function sortByColumns(entries) {
+  const list = Array.isArray(entries) ? entries.slice() : [];
+  list.sort((a, b) => (a.x - b.x) || (a.y - b.y));
+  const cols = [];
+  for (const e of list) {
+    const col = cols.find((c) => c.items.some((o) => xOverlap(e, o) > 0.5 * Math.min(e.w, o.w)));
+    if (col) col.items.push(e);
+    else cols.push({ items: [e] });
+  }
+  const meanX = (c) => c.items.reduce((s, e) => s + e.x, 0) / c.items.length;
+  cols.sort((a, b) => meanX(a) - meanX(b));
+  return cols.flatMap((c) => c.items.sort((a, b) => (a.y - b.y) || (a.x - b.x)));
+}
+
+function xOverlap(a, b) {
+  return Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+}
+
+// PaddleOCR recognizer keys: one per line of the dictionary file, then ' ' for the space class.
+// Class 0 is the CTC blank, so key j-1 is class j.
+function buildRecKeys(text) {
+  const keys = String(text == null ? '' : text).split(/\r?\n/);
+  if (keys[keys.length - 1] === '') keys.pop();
+  keys.push(' ');
+  return keys;
+}
+
+// Greedy CTC decode of recognizer output (T frames x C classes, row-major in `data`).
+// Returns the text, its score (the mean max probability over the emitted characters) and
+// charScores: the max probability of each emitted character, aligned with text (charScores[i] is text[i]).
+function ctcDecode(data, T, C, keys) {
+  let text = '';
+  const charScores = [];
+  let last = -1;
+  let total = 0;
+  let cnt = 0;
+  for (let i = 0; i < T; i++) {
+    let best = 0;
+    let bv = -Infinity;
+    for (let j = 0; j < C; j++) {
+      const v = data[i * C + j];
+      if (v > bv) { bv = v; best = j; }
+    }
+    if (best !== 0 && best !== last) {
+      const ch = keys[best - 1] || '';
+      text += ch;
+      for (let k = 0; k < ch.length; k++) charScores.push(bv);
+      total += bv;
+      cnt++;
+    }
+    last = best;
+  }
+  return { text, score: cnt ? total / cnt : 0, charScores };
+}
+
+// Text detection (PP-OCRv4 det): pixels above DET_THRESHOLD form 4-neighbour components. A component is kept
+// when its smaller side is at least DET_MIN_SIDE pixels and its mean probability is at least DET_MIN_SCORE.
+const DET_THRESHOLD = 0.3;
+const DET_MIN_SIDE = 3;
+const DET_MIN_SCORE = 0.6;
+
+// prob: detector map, w x h, row-major. Returns [{x0, y0, x1, y1, score}] with inclusive pixel bounds.
+function detectComponents(prob, w, h) {
+  const n = w * h;
+  const seen = new Uint8Array(n);
   const out = [];
-  for (const block of (data && data.blocks) || []) {
-    for (const para of block.paragraphs || []) {
-      for (const line of para.lines || []) {
-        out.push({
-          text: line.text || '',
-          bbox: line.bbox || null,
-          words: (line.words || []).map((w) => ({ text: w.text || '', bbox: w.bbox || null }))
-        });
+  const stack = [];
+  for (let i = 0; i < n; i++) {
+    if (!(prob[i] > DET_THRESHOLD) || seen[i]) continue;
+    let x0 = w, y0 = h, x1 = 0, y1 = 0, cnt = 0, sum = 0;
+    seen[i] = 1;
+    stack.push(i);
+    while (stack.length) {
+      const p = stack.pop();
+      const x = p % w;
+      const y = (p / w) | 0;
+      cnt++;
+      sum += prob[p];
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      const nb = [p - 1, p + 1, p - w, p + w];
+      for (let k = 0; k < 4; k++) {
+        const q = nb[k];
+        if (q < 0 || q >= n) continue;
+        if ((k === 0 && x === 0) || (k === 1 && x === w - 1)) continue;
+        if (prob[q] > DET_THRESHOLD && !seen[q]) {
+          seen[q] = 1;
+          stack.push(q);
+        }
       }
     }
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    if (Math.min(bw, bh) < DET_MIN_SIDE || sum / cnt < DET_MIN_SCORE) continue;
+    out.push({ x0, y0, x1, y1, score: sum / cnt });
   }
   return out;
 }
 
-// Candidates for one pass: each exact 10-digit value with its position in original-image units.
+// Recognizer input: height 48, width from the box's aspect ratio, kept within [16, 1600].
+const REC_HEIGHT = 48;
+function recInputWidth(bw, bh) {
+  return Math.max(16, Math.min(1600, Math.ceil((REC_HEIGHT * bw) / bh)));
+}
+
+// PaddleOCR results [{text, score, charScores, box: {x0, y0, x1, y1}}] -> the pass shape the rest of the app reads.
+// The whole box is the single word of its line. charScores (per character of text) go on the line and its word.
+// Empty texts are skipped.
+function passFromPaddle(items) {
+  const lines = [];
+  for (const it of Array.isArray(items) ? items : []) {
+    if (!it || !it.text) continue;
+    const bbox = { x0: it.box.x0, y0: it.box.y0, x1: it.box.x1, y1: it.box.y1 };
+    const charScores = Array.isArray(it.charScores) ? it.charScores.slice() : undefined;
+    lines.push({
+      text: it.text,
+      bbox,
+      words: [{ text: it.text, bbox: { ...bbox }, charScores: charScores && charScores.slice() }],
+      score: it.score,
+      charScores
+    });
+  }
+  return { scale: 1, text: lines.map((l) => l.text).join('\n'), lines };
+}
+
+// Candidates for one pass: each exact 10-digit value with its position and width in original-image units.
+// x and w cover the words that hold the value's digits (for a PaddleOCR line, the whole box).
+// score is the lowest recognizer score among the characters that make up the value's digits (the
+// per-character charScores of the words holding them). It falls back to the line score when that mapping fails.
 function collectCandidates(lines, fixConfusions, scale) {
   const cands = [];
   const digitsOf = (t) => (fixConfusions ? fixConfusionsInLine(t || '') : (t || '')).replace(/\D/g, '');
+  // Index in text of each digit that digitsOf keeps, in order (fixConfusionsInLine keeps the length).
+  const digitIndexesOf = (t) => {
+    const fixed = fixConfusions ? fixConfusionsInLine(t || '') : (t || '');
+    const idx = [];
+    for (let i = 0; i < fixed.length; i++) if (/\d/.test(fixed[i])) idx.push(i);
+    return idx;
+  };
   for (const line of lines) {
     const exact = extractNumbers(line.text, fixConfusions).exact;
     if (exact.length === 0) continue;
@@ -947,11 +1054,31 @@ function collectCandidates(lines, fixConfusions, scale) {
     // The line's digit stream, built word by word, with each word's span in that stream.
     const spans = [];
     let stream = '';
-    for (const w of line.words) {
-      const d = digitsOf(w.text);
-      spans.push({ start: stream.length, end: stream.length + d.length, bbox: w.bbox });
+    for (const word of line.words) {
+      const d = digitsOf(word.text);
+      spans.push({
+        start: stream.length,
+        end: stream.length + d.length,
+        bbox: word.bbox,
+        charScores: word.charScores,
+        digitIdx: digitIndexesOf(word.text)
+      });
       stream += d;
     }
+    // Lowest score of the stream digits [pos, pos + len), or null when a word lacks a score for one of them.
+    const minDigitScore = (pos, len) => {
+      let min = Infinity;
+      for (const s of spans) {
+        if (!(s.start < pos + len && s.end > pos)) continue;
+        if (!Array.isArray(s.charScores) || s.digitIdx.length !== s.end - s.start) return null;
+        for (let p = Math.max(s.start, pos); p < Math.min(s.end, pos + len); p++) {
+          const v = s.charScores[s.digitIdx[p - s.start]];
+          if (typeof v !== 'number' || Number.isNaN(v)) return null;
+          if (v < min) min = v;
+        }
+      }
+      return min === Infinity ? null : min;
+    };
     const seen = new Map();
     for (const v of exact) {
       // The k-th time a value appears on this line, use its k-th occurrence in the stream.
@@ -964,24 +1091,41 @@ function collectCandidates(lines, fixConfusions, scale) {
         if (pos < 0) break;
         from = pos + 1;
       }
-      const span = pos >= 0 ? spans.find((s) => pos >= s.start && pos < s.end) : null;
-      const x = span && span.bbox ? span.bbox.x0 / scale : b.x0 / scale;
-      cands.push({ v, x, y, lh });
+      const covering = pos >= 0
+        ? spans.filter((s) => s.bbox && s.start < pos + v.length && s.end > pos)
+        : [];
+      const box = covering.length
+        ? {
+          x0: Math.min(...covering.map((s) => s.bbox.x0)),
+          x1: Math.max(...covering.map((s) => s.bbox.x1))
+        }
+        : b;
+      const charMin = pos >= 0 ? minDigitScore(pos, v.length) : null;
+      const score = charMin === null ? line.score : charMin;
+      cands.push({ v, x: box.x0 / scale, w: (box.x1 - box.x0) / scale, y, lh, score });
     }
   }
   return cands;
 }
 
-// passes: [{scale, text, lines}], base pass first. order: 'reading' (default) or 'rows'.
+// Recognizer score below which an accepted value is flagged for a check (no alternatives are shown for it).
+const LOW_CONFIDENCE_SCORE = 0.9;
+
+function isLowConfidence(m) {
+  return typeof m.minScore === 'number' && m.minScore < LOW_CONFIDENCE_SCORE;
+}
+
+// passes: [{scale, text, lines}], base pass first. order: 'rows' (default, sortByRows) or 'columns' (sortByColumns).
 // Agreement rule, per merged candidate:
 //   votes >= 2                      -> accepted (flagged when other values were seen)
 //   votes 1 and support >= 2        -> accepted and flagged (its alternatives are the other values)
 //   support 1 (one pass saw it)     -> not accepted; goes to near, unless the image has a single pass
-// Returns the accepted values, the alternatives per value, the near misses (base-pass runs and
+// Returns the accepted values, the alternatives per value, lowConf per value (source score below
+// LOW_CONFIDENCE_SCORE; such a value has no alternatives), the near misses (base-pass runs and
 // single-pass values), and nearSingle: the near values that came from the agreement rule.
 function buildImageResult(passes, fixConfusions, order) {
   const list = Array.isArray(passes) ? passes : [];
-  if (list.length === 0) return { exact: [], alts: [], near: [], nearSingle: [] };
+  if (list.length === 0) return { exact: [], alts: [], lowConf: [], near: [], nearSingle: [] };
   const merged = mergePasses(list.map((p) => collectCandidates(p.lines, fixConfusions, p.scale)));
   const singlePassAllowed = list.length === 1;
   const accepted = [];
@@ -990,9 +1134,10 @@ function buildImageResult(passes, fixConfusions, order) {
     if (m.votes >= 2 || m.support >= 2 || singlePassAllowed) accepted.push(m);
     else singles.push(m.value);
   }
-  const ordered = order === 'rows' ? sortByRows(accepted) : accepted;
+  const ordered = order === 'columns' ? sortByColumns(accepted) : sortByRows(accepted);
   const exact = ordered.map((m) => m.value);
-  const alts = ordered.map((m) => m.alternatives);
+  const lowConf = ordered.map((m) => isLowConfidence(m));
+  const alts = ordered.map((m, k) => (lowConf[k] ? [] : m.alternatives));
 
   const baseNear = [];
   for (const line of list[0].lines) {
@@ -1005,7 +1150,7 @@ function buildImageResult(passes, fixConfusions, order) {
     nearSingle.push(v);
     near.push(v);
   }
-  return { exact, alts, near, nearSingle };
+  return { exact, alts, lowConf, near, nearSingle };
 }
 /* @pure-end */
 
@@ -1067,13 +1212,11 @@ const state = {
   images: [],
   // {id, value, checked, source: 'ocr' | 'manual', imageIndex, edited, nearKey, conflict, alternatives}
   rows: [],
-  orderMode: 'reading', // 'reading' (Tesseract order) or 'rows' (sorted by line, then x), applied per image
+  orderMode: 'rows',   // 'rows' (by line, left to right) or 'columns' (by column, top to bottom), applied per image
   ocrDirty: false,     // true when OCR rows were edited, deleted, or checkbox-toggled by hand
   nextRowId: 1,
   nextImageId: 1,
-  workerPromise: null,
-  running: false,
-  progressCtx: null    // {pos, total} while OCR runs
+  running: false
 };
 
 /* ---------- small helpers ---------- */
@@ -1162,7 +1305,7 @@ function showProgress(label, ratio) {
   els.progress.hidden = false;
   els.progress.value = r;
   els.progressText.hidden = false;
-  els.progressText.textContent = label + ' ' + Math.round(r * 100) + '%';
+  els.progressText.textContent = label;
 }
 
 function hideProgress() {
@@ -1251,7 +1394,8 @@ function acceptFiles(files) {
       near: [],
       nearSingle: [],
       passes: [],
-      alts: []
+      alts: [],
+      lowConf: []
     });
     added++;
   }
@@ -1478,9 +1622,10 @@ function addOcrRows(index) {
   const img = state.images[index];
   img.exact.forEach((value, k) => {
     const alternatives = (img.alts && img.alts[k]) || [];
+    const lowConfidence = !!(img.lowConf && img.lowConf[k]);
     state.rows.push({
       id: state.nextRowId++, value, checked: false, source: 'ocr', imageIndex: index, edited: false,
-      conflict: alternatives.length > 0, alternatives: alternatives.slice()
+      conflict: alternatives.length > 0 || lowConfidence, alternatives: alternatives.slice(), lowConfidence
     });
   });
 }
@@ -1491,6 +1636,7 @@ function finishImage(img) {
   img.rawText = img.passes.length ? img.passes[0].text : '';
   img.exact = res.exact;
   img.alts = res.alts;
+  img.lowConf = res.lowConf;
   img.near = res.near;
   img.nearSingle = res.nearSingle;
   img.status = 'done';
@@ -1519,122 +1665,200 @@ function loadViaImage(file) {
   });
 }
 
-// Draws the source at `scale` (high-quality smoothing) and converts it to plain grayscale.
-function prepareCanvas(source, scale) {
-  const w0 = source.naturalWidth || source.width;
-  const h0 = source.naturalHeight || source.height;
-  const w = Math.max(1, Math.round(w0 * scale));
-  const h = Math.max(1, Math.round(h0 * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, w, h);
-  const imageData = ctx.getImageData(0, 0, w, h);
-  const d = imageData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const y = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-    d[i] = d[i + 1] = d[i + 2] = y;
+/* ---------- OCR engine: PaddleOCR PP-OCRv4 det + rec on onnxruntime-web ---------- */
+
+const PADDLE_DIR = 'vendor/paddle/';
+const DET_LIMIT_SIDE = 960;
+const DET_MEAN = [0.485, 0.456, 0.406];
+const DET_STD = [0.229, 0.224, 0.225];
+const REC_MEAN = [0.5, 0.5, 0.5];
+const REC_STD = [0.5, 0.5, 0.5];
+const UNCLIP_RATIO = 1.5;
+const MODEL_LOAD_ERROR = 'โหลดโมเดล OCR ไม่สำเร็จ กรุณารีเฟรชหน้าแล้วลองใหม่ (ต้องเปิดผ่านเว็บไซต์ ไม่ใช่เปิดไฟล์จากเครื่องโดยตรง)';
+const MODEL_LOADING_TEXT = 'กำลังโหลดโมเดล OCR (ครั้งแรกประมาณ 27 MB)';
+// Yields one task so the progress update can paint between heavy inference runs.
+// Not requestAnimationFrame: it never fires in a hidden tab, which would stall reading.
+const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+
+let enginePromise = null;
+
+// Loads both sessions and the keys once. A failed load is not kept, so the next run tries again.
+// If any part fails, the sessions that did load are released before the error is rethrown.
+function getEngine() {
+  if (!enginePromise) {
+    enginePromise = (async () => {
+      const base = new URL(PADDLE_DIR, location.href).href;
+      ort.env.wasm.wasmPaths = base;
+      ort.env.wasm.numThreads = 1;
+      const opts = { executionProviders: ['wasm'] };
+      const detP = ort.InferenceSession.create(base + 'ch_PP-OCRv4_det_infer.onnx', opts);
+      const recP = ort.InferenceSession.create(base + 'ch_PP-OCRv4_rec_infer.onnx', opts);
+      const keysP = fetch(base + 'ppocr_keys_v1.txt').then((r) => {
+        if (!r.ok) throw new Error('ppocr_keys_v1.txt: HTTP ' + r.status);
+        return r.text();
+      });
+      try {
+        const [det, rec, keysText] = await Promise.all([detP, recP, keysP]);
+        return { det, rec, keys: buildRecKeys(keysText) };
+      } catch (err) {
+        // Wait for the other session loads to settle, so a session that finishes later is not leaked.
+        const settled = await Promise.allSettled([detP, recP]);
+        for (const s of settled) {
+          if (s.status === 'fulfilled') s.value.release?.();
+        }
+        throw err;
+      }
+    })().catch((err) => {
+      enginePromise = null;
+      throw err;
+    });
   }
-  ctx.putImageData(imageData, 0, 0);
-  return canvas;
+  return enginePromise;
 }
 
-// Runs OCR at every scale for one image. The source is loaded once and reused for each pass.
+function srcWidth(src) { return src.naturalWidth || src.width; }
+function srcHeight(src) { return src.naturalHeight || src.height; }
+
+function toCanvas(src, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, 0, 0, w, h);
+  return c;
+}
+
+// BGR, channel-first float tensor with mean/std normalisation (the PaddleOCR input layout).
+function tensorFrom(canvas, mean, std) {
+  const w = canvas.width, h = canvas.height;
+  const d = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+  const out = new Float32Array(3 * w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = d[4 * i] / 255, g = d[4 * i + 1] / 255, b = d[4 * i + 2] / 255;
+    out[i] = (b - mean[0]) / std[0];
+    out[w * h + i] = (g - mean[1]) / std[1];
+    out[2 * w * h + i] = (r - mean[2]) / std[2];
+  }
+  return new ort.Tensor('float32', out, [1, 3, h, w]);
+}
+
+// Detector: the long side is limited to DET_LIMIT_SIDE, both sides rounded to multiples of 32.
+// Returns the text boxes in source pixels, unclipped.
+async function detectBoxes(m, src) {
+  const W0 = srcWidth(src), H0 = srcHeight(src);
+  const r = Math.min(1, DET_LIMIT_SIDE / Math.max(W0, H0));
+  const w = Math.max(32, Math.round((W0 * r) / 32) * 32);
+  const h = Math.max(32, Math.round((H0 * r) / 32) * 32);
+  const canvas = toCanvas(src, w, h);
+  let t;
+  try {
+    t = tensorFrom(canvas, DET_MEAN, DET_STD);
+  } finally {
+    // The tensor holds its own copy of the pixels, so the canvas memory can go now.
+    canvas.width = canvas.height = 0;
+  }
+  const res = await m.det.run({ [m.det.inputNames[0]]: t });
+  const prob = res[m.det.outputNames[0]].data;
+  return detectComponents(prob, w, h).map((c) => {
+    // Unclip: grow the box by area * UNCLIP_RATIO / perimeter (detector pixels), then map to the source.
+    const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
+    const dpx = (bw * bh * UNCLIP_RATIO) / (2 * (bw + bh));
+    return {
+      x0: Math.max(0, (c.x0 - dpx) * W0 / w),
+      y0: Math.max(0, (c.y0 - dpx) * H0 / h),
+      x1: Math.min(W0, (c.x1 + 1 + dpx) * W0 / w),
+      y1: Math.min(H0, (c.y1 + 1 + dpx) * H0 / h)
+    };
+  });
+}
+
+// Recognizer: one box, cut from the source, scaled to height 48. Returns {text, score, charScores}.
+async function recognizeBox(m, src, b) {
+  const bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+  const W = recInputWidth(bw, bh);
+  const c = document.createElement('canvas');
+  let input;
+  try {
+    c.width = W;
+    c.height = REC_HEIGHT;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(src, b.x0, b.y0, bw, bh, 0, 0, W, REC_HEIGHT);
+    input = tensorFrom(c, REC_MEAN, REC_STD);
+  } finally {
+    // The tensor holds its own copy of the pixels, so the canvas memory can go now.
+    c.width = c.height = 0;
+  }
+  const res = await m.rec.run({ [m.rec.inputNames[0]]: input });
+  const out = res[m.rec.outputNames[0]];
+  const [, T, C] = out.dims;
+  return ctcDecode(out.data, T, C, m.keys);
+}
+
+// Reads one image. Returns [{text, score, charScores, box: {x0, y0, x1, y1}}] in a rough reading order.
+// hooks.onDetect() runs before detection; hooks.onRecognize(k, m) runs before each of the m boxes (k from 1);
+// hooks.onRecognized(m) runs after the last box. Each progress update is painted (nextFrame) before the next run.
+async function paddleRead(source, hooks) {
+  const h = hooks || {};
+  const m = await getEngine();
+  if (h.onDetect) h.onDetect();
+  await nextFrame();
+  const boxes = await detectBoxes(m, source);
+  const items = [];
+  for (let k = 0; k < boxes.length; k++) {
+    if (h.onRecognize) h.onRecognize(k + 1, boxes.length);
+    await nextFrame();
+    const r = await recognizeBox(m, source, boxes[k]);
+    if (r.text) items.push({ text: r.text, score: r.score, charScores: r.charScores, box: boxes[k] });
+  }
+  if (h.onRecognized && boxes.length) h.onRecognized(boxes.length);
+  items.sort((a, b) => {
+    const ha = a.box.y1 - a.box.y0, hb = b.box.y1 - b.box.y0;
+    const ca = (a.box.y0 + a.box.y1) / 2, cb = (b.box.y0 + b.box.y1) / 2;
+    return Math.abs(ca - cb) < Math.min(ha, hb) * 0.5 ? a.box.x0 - b.box.x0 : ca - cb;
+  });
+  return items;
+}
+
+// Reads one image in a single PaddleOCR pass. The source is loaded once and released afterwards.
 async function readImagePasses(file, pos, total) {
   const source = await loadSource(file);
   try {
-    const w0 = source.naturalWidth || source.width;
-    const h0 = source.naturalHeight || source.height;
-    const scales = ocrScales(Math.max(w0, h0));
-    const worker = await getWorker();
-    const passes = [];
-    for (let j = 0; j < scales.length; j++) {
-      state.progressCtx = { pos, total, pass: j + 1, passes: scales.length };
-      showProgress('รูปที่ ' + pos + '/' + total + ' · รอบ ' + (j + 1) + '/' + scales.length + ' · กำลังเตรียมรูปภาพ', 0);
-      let canvas = null;
-      try {
-        canvas = prepareCanvas(source, scales[j]);
-        const result = await worker.recognize(canvas, {}, { text: true, blocks: true });
-        const data = (result && result.data) || {};
-        passes.push({ scale: scales[j], text: data.text || '', lines: flattenLines(data) });
-      } finally {
-        // Release the pixel buffer right away; large canvases add up across passes and images.
-        if (canvas) {
-          canvas.width = 0;
-          canvas.height = 0;
-        }
-      }
-    }
-    return passes;
+    const head = 'รูปที่ ' + pos + '/' + total;
+    const items = await paddleRead(source, {
+      onDetect: () => showProgress(head + ' · กำลังหาตำแหน่งข้อความ', 0),
+      // Box k is about to be read, so k - 1 boxes are done.
+      onRecognize: (k, n) => showProgress(head + ' · กำลังอ่านข้อความ ' + k + '/' + n, (k - 1) / n),
+      onRecognized: (n) => showProgress(head + ' · กำลังอ่านข้อความ ' + n + '/' + n, 1)
+    });
+    return [passFromPaddle(items)];
   } finally {
     if (typeof source.close === 'function') source.close();
   }
 }
 
-function handleOcrLog(m) {
-  if (!m || typeof m.status !== 'string') return;
-  const s = m.status;
-  const step = s.includes('recogn') ? 'กำลังอ่านข้อความ'
-    : s.includes('lang') ? 'กำลังโหลดชุดภาษา (eng)'
-    : 'กำลังเตรียมเครื่องมือ OCR';
-  const ctx = state.progressCtx;
-  const label = ctx
-    ? 'รูปที่ ' + ctx.pos + '/' + ctx.total + (ctx.passes ? ' · รอบ ' + ctx.pass + '/' + ctx.passes : '') + ' · ' + step
-    : step;
-  showProgress(label, typeof m.progress === 'number' ? m.progress : 0);
-}
-
-function getWorker() {
-  if (!state.workerPromise) {
-    state.workerPromise = (async () => {
-      // Engine and language data ship in ./vendor so OCR needs no third-party fetches.
-      // worker-wrap.js serves the language data from base64 text (see that file).
-      // OEM 0 = legacy Tesseract engine (TESSERACT_ONLY), not the LSTM engine. The LSTM engine read the
-      // bold 5 on SIM-card labels as 6 at every scale, PSM and model tried. The legacy engine read them
-      // correctly, and with the multi-scale voting in mergePasses it was also faster. It needs the
-      // legacy+LSTM language data (eng.traineddata 4.0.0), which is what vendor/ ships.
-      const vendor = new URL('vendor/', location.href).href;
-      const worker = await Tesseract.createWorker('eng', 0, {
-        logger: handleOcrLog,
-        workerPath: vendor + 'worker-wrap.js',
-        workerBlobURL: false, // the wrapper resolves its siblings from its own URL
-        corePath: vendor,
-        langPath: vendor,
-        cacheMethod: 'none'
-      });
-      // PSM 3 (fully automatic layout) instead of tesseract.js's default PSM 6 (single block), which breaks tables.
-      await worker.setParameters({ preserve_interword_spaces: '1', tessedit_pageseg_mode: '3' });
-      return worker;
-    })().catch((err) => {
-      state.workerPromise = null;
-      throw err;
-    });
-  }
-  return state.workerPromise;
-}
-
-// Reads each target image in order with the single worker. A failed image is marked and skipped.
+// Reads each target image in order. A failed image is marked and skipped; a failed model load stops the run.
 async function startReading(targets) {
-  if (typeof Tesseract === 'undefined') {
-    setAlert('error', 'อ่านรูปภาพไม่สำเร็จ: โหลดไลบรารี OCR ไม่ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วรีเฟรชหน้า');
-    return;
-  }
   state.running = true;
   setAlert('', '');
   updateControls();
   let okCount = 0;
   try {
+    if (!enginePromise) showProgress(MODEL_LOADING_TEXT, 0);
+    try {
+      await getEngine();
+    } catch (err) {
+      setAlert('error', MODEL_LOAD_ERROR);
+      return;
+    }
     for (const img of targets) {
       const pos = state.images.indexOf(img) + 1;
       if (pos === 0) continue;
-      state.progressCtx = { pos, total: state.images.length, pass: 0, passes: 0 };
       img.status = 'reading';
       img.error = '';
       render();
-      showProgress('รูปที่ ' + pos + '/' + state.images.length + ' · กำลังเตรียมรูปภาพ', 0);
+      showProgress('รูปที่ ' + pos + '/' + state.images.length + ' · กำลังหาตำแหน่งข้อความ', 0);
       try {
         img.passes = await readImagePasses(img.file, pos, state.images.length);
         finishImage(img);
@@ -1647,7 +1871,6 @@ async function startReading(targets) {
     }
   } finally {
     state.running = false;
-    state.progressCtx = null;
     hideProgress();
     render();
   }
@@ -1669,8 +1892,8 @@ async function runOcr() {
 // Re-reads every image; hand edits to OCR rows are discarded after confirmation.
 async function rerunAll() {
   if (state.running || state.images.length === 0) return;
-  if (typeof Tesseract === 'undefined') {
-    toast('โหลดไลบรารี OCR ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วรีเฟรชหน้า');
+  if (typeof ort === 'undefined') {
+    toast(MODEL_LOAD_ERROR);
     return;
   }
   if (state.ocrDirty) {
@@ -1687,6 +1910,7 @@ async function rerunAll() {
     img.nearSingle = [];
     img.passes = [];
     img.alts = [];
+    img.lowConf = [];
   });
   state.ocrDirty = false;
   render();
@@ -1700,6 +1924,7 @@ function rebuildFromPasses() {
     const res = buildImageResult(img.passes, els.fixCheck.checked, state.orderMode);
     img.exact = res.exact;
     img.alts = res.alts;
+    img.lowConf = res.lowConf;
     img.near = res.near;
     img.nearSingle = res.nearSingle;
   });
@@ -1731,7 +1956,7 @@ async function onFixConfusionsChange() {
 
 function getOrderMode() {
   const checked = document.querySelector('input[name="order"]:checked');
-  return checked && checked.value === 'rows' ? 'rows' : 'reading';
+  return checked && checked.value === 'columns' ? 'columns' : 'rows';
 }
 
 function setOrderMode(mode) {
@@ -1778,6 +2003,7 @@ async function clearResults() {
     img.nearSingle = [];
     img.passes = [];
     img.alts = [];
+    img.lowConf = [];
   });
   state.ocrDirty = false;
   setAlert('', '');
@@ -1933,6 +2159,7 @@ function renderRows() {
         if (row.conflict) {
           row.conflict = false;
           row.alternatives = [];
+          row.lowConfidence = false;
           const cf = li.querySelector('.badge-conflict');
           if (cf) cf.remove();
         }
@@ -1963,7 +2190,8 @@ function renderRows() {
       cf.className = 'badge badge-conflict';
       cf.textContent = 'ตรวจสอบ';
       const alts = row.alternatives || [];
-      cf.title = alts.length ? 'OCR อ่านได้หลายแบบ: ' + alts.join(', ') : 'ควรตรวจสอบตัวเลขนี้';
+      if (row.lowConfidence) cf.title = 'ความมั่นใจต่ำ ควรตรวจสอบ';
+      else cf.title = alts.length ? 'OCR อ่านได้หลายแบบ: ' + alts.join(', ') : 'ควรตรวจสอบตัวเลขนี้';
       main.appendChild(cf);
     }
     if (row.source === 'ocr') {
