@@ -1,0 +1,1945 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR ชุดตัวเลข 10 หลัก เป็น Word</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f3f5f9;
+    --card: #ffffff;
+    --text: #1b2330;
+    --muted: #5b6676;
+    --border: #d7dde8;
+    --primary: #2563eb;
+    --primary-text: #ffffff;
+    --accent-soft: #e8efff;
+    --success: #15803d; --success-bg: #e7f6ec;
+    --warning: #8a5a00; --warning-bg: #fff5d6;
+    --error: #b42318;   --error-bg: #fdeceb;
+    --info: #1d4ed8;    --info-bg: #e8efff;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
+    --focus: 0 0 0 3px rgba(37, 99, 235, .35);
+    --font: 'Sarabun', Tahoma, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141c;
+      --card: #171d27;
+      --text: #e7ecf4;
+      --muted: #9aa6b8;
+      --border: #2b3546;
+      --primary: #5b8cff;
+      --primary-text: #0b1220;
+      --accent-soft: #1d2a47;
+      --success: #6fd08f; --success-bg: #11301e;
+      --warning: #f1c65a; --warning-bg: #33290f;
+      --error: #ff8a80;   --error-bg: #3a1717;
+      --info: #8fb0ff;    --info-bg: #1d2a47;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141c;
+    --card: #171d27;
+    --text: #e7ecf4;
+    --muted: #9aa6b8;
+    --border: #2b3546;
+    --primary: #5b8cff;
+    --primary-text: #0b1220;
+    --accent-soft: #1d2a47;
+    --success: #6fd08f; --success-bg: #11301e;
+    --warning: #f1c65a; --warning-bg: #33290f;
+    --error: #ff8a80;   --error-bg: #3a1717;
+    --info: #8fb0ff;    --info-bg: #1d2a47;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.55;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  h1 { font-size: 1.35rem; margin: 0; }
+  h2 { font-size: 1.1rem; margin: 0 0 12px; }
+  p { margin: 0; }
+  .muted { color: var(--muted); font-size: .92rem; }
+  .mono { font-family: var(--mono); }
+
+  .app-header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px;
+  }
+  .app-header .inner { max-width: 1200px; margin: 0 auto; display: grid; gap: 4px; }
+
+  .layout {
+    display: grid;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1200px;
+    margin: 0 auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .col-side { display: grid; gap: 16px; min-width: 0; }
+  @media (min-width: 960px) {
+    .layout { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); align-items: start; }
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    min-width: 0;
+  }
+
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 20px 16px;
+    text-align: center;
+    display: grid;
+    gap: 10px;
+    justify-items: center;
+    transition: background .15s, border-color .15s;
+  }
+  .dropzone.dragover { border-color: var(--primary); background: var(--accent-soft); }
+
+  .preview { margin-top: 16px; display: grid; gap: 10px; }
+  .preview img {
+    width: 100%;
+    max-height: 260px;
+    object-fit: contain;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .file-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; word-break: break-all; }
+
+  .btn {
+    font: inherit;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+    min-height: 40px;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--primary); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: var(--primary); color: var(--primary-text); border-color: transparent; width: 100%; font-weight: 600; }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.05); border-color: transparent; }
+  .btn-small { min-height: 34px; padding: 5px 10px; font-size: .9rem; }
+  .btn-danger { color: var(--error); }
+  button:focus-visible, input:focus-visible, summary:focus-visible, .chip:focus-within {
+    outline: none;
+    box-shadow: var(--focus);
+  }
+
+  fieldset { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+  legend { font-weight: 600; margin-bottom: 8px; padding: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    position: relative;
+    display: inline-flex;
+    cursor: pointer;
+  }
+  .chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .chip span {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 14px;
+    background: var(--card);
+    font-size: .95rem;
+  }
+  .chip input:checked + span {
+    background: var(--primary);
+    color: var(--primary-text);
+    border-color: transparent;
+  }
+  .chip input:focus-visible + span { box-shadow: var(--focus); }
+
+  .field-inline { display: grid; gap: 6px; margin-top: 10px; }
+  .field-inline label { font-size: .95rem; }
+  input[type="number"] {
+    font: inherit;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    width: 160px;
+    max-width: 100%;
+  }
+
+  .check { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; cursor: pointer; }
+  .check input { margin-top: 5px; width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--primary); }
+
+  progress {
+    width: 100%;
+    height: 10px;
+    margin-top: 14px;
+    accent-color: var(--primary);
+  }
+  .progress-text { margin-top: 6px; font-size: .92rem; color: var(--muted); }
+
+  .alert {
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-top: 12px;
+    border: 1px solid transparent;
+    font-size: .95rem;
+    display: grid;
+    gap: 4px;
+  }
+  .alert.error { background: var(--error-bg); color: var(--error); border-color: var(--error); }
+  .alert.warning { background: var(--warning-bg); color: var(--warning); border-color: var(--warning); }
+  .alert.success { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+  .alert.info { background: var(--info-bg); color: var(--info); border-color: var(--info); }
+
+  .counters { font-weight: 600; margin-bottom: 8px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+
+  .rows { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .row {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+  }
+  .row.invalid { border-color: var(--error); }
+  .row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary); }
+  .row .idx { color: var(--muted); font-family: var(--mono); min-width: 2.2em; text-align: right; }
+  .row-main { display: grid; gap: 2px; min-width: 0; }
+  .row-main .badge { justify-self: start; margin: 2px 0 0; }
+  .value {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    letter-spacing: .06em;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .row.invalid .value { border-color: var(--error); }
+  .row-err { color: var(--error); font-size: .85rem; }
+  /* Narrow screens: the value input gets its own full-width line under the controls. */
+  @media (max-width: 480px) {
+    .row { grid-template-columns: auto auto minmax(0, 1fr) auto auto; }
+    .row > .btn-small { justify-self: end; }
+    .row > .row-main { grid-column: 1 / -1; order: 2; }
+    .row > .btn-small:nth-of-type(1) { order: 1; }
+    .row > .btn-small:nth-of-type(2) { order: 1; }
+  }
+  .badge {
+    font-size: .75rem;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--warning-bg);
+    color: var(--warning);
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .empty { padding: 18px 0; text-align: center; color: var(--muted); }
+
+  details {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+  }
+  summary { cursor: pointer; font-weight: 600; }
+  details > .near-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+  .near-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+    font-size: .9rem;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 10px;
+    max-height: 280px;
+    overflow: auto;
+    margin: 10px 0 0;
+  }
+
+  .footer {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 8px 16px 24px;
+    display: grid;
+    gap: 6px;
+    text-align: center;
+  }
+  .flow { font-weight: 600; }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: var(--card);
+    padding: 10px 16px;
+    border-radius: 999px;
+    box-shadow: var(--shadow);
+    max-width: calc(100% - 32px);
+    font-size: .95rem;
+    z-index: 10;
+  }
+
+  /* ---- multi-image grid, group dividers, confirm dialog ---- */
+  input[type="text"] {
+    font: inherit;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    width: 100%;
+    max-width: 280px;
+  }
+  .btn-block { width: 100%; margin-top: 8px; }
+  .btn-ok { background: var(--primary); color: var(--primary-text); border-color: transparent; font-weight: 600; }
+  .btn-ok.danger { background: var(--error); color: #fff; }
+  .image-section { margin-top: 14px; display: grid; gap: 8px; }
+  .image-toolbar { margin: 0; justify-content: space-between; align-items: center; }
+  .thumb-grid {
+    list-style: none; padding: 0; margin: 0;
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+  .thumb-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+    background: var(--card);
+    min-width: 0;
+  }
+  .thumb-card img {
+    width: 100%;
+    height: 110px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+  .thumb-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-weight: 600; font-size: .9rem; }
+  .thumb-name { font-size: .8rem; word-break: break-all; }
+  .thumb-card .muted { font-size: .8rem; }
+  .thumb-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+  .thumb-actions .btn-small { min-height: 30px; padding: 3px 8px; }
+  .status {
+    font-size: .78rem;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--muted);
+    justify-self: end;
+    white-space: nowrap;
+  }
+  .status.reading { background: var(--info-bg); color: var(--info); }
+  .status.done { background: var(--success-bg); color: var(--success); }
+  .status.error { background: var(--error-bg); color: var(--error); }
+  .badge.badge-img { background: var(--info-bg); color: var(--info); }
+  .group-divider {
+    list-style: none;
+    padding: 8px 4px 2px;
+    font-weight: 600;
+    font-size: .9rem;
+    color: var(--primary);
+    border-bottom: 1px dashed var(--border);
+  }
+  .group-divider .muted { font-weight: 400; margin-left: 8px; }
+  .raw-list { display: grid; gap: 8px; margin-top: 10px; }
+  .raw-list details { margin-top: 0; }
+  .confirm-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, .45);
+    display: grid; place-items: center;
+    padding: 16px;
+    z-index: 20;
+  }
+  dialog.confirm-dialog {
+    border: 0; padding: 0; background: transparent;
+    max-width: min(420px, calc(100% - 32px));
+    color: var(--text);
+  }
+  dialog.confirm-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  .confirm-box {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    display: grid;
+    gap: 16px;
+    width: 100%;
+  }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="inner">
+    <h1>อ่านชุดตัวเลข 10 หลักจากรูปภาพ</h1>
+    <p class="muted">ประมวลผลในเบราว์เซอร์ รูปภาพไม่ถูกอัปโหลดไปเซิร์ฟเวอร์</p>
+  </div>
+</header>
+
+<main class="layout">
+  <div class="col-side">
+
+    <!-- SECTION 1: images -->
+    <section class="card" aria-labelledby="h-upload">
+      <h2 id="h-upload">1. อัปโหลดรูปภาพ</h2>
+      <div id="dropzone" class="dropzone">
+        <p>ลากไฟล์รูปมาวางที่นี่ หรือกด Ctrl+V เพื่อวางรูปจากคลิปบอร์ด</p>
+        <p class="muted">รองรับ JPG, JPEG, PNG, WEBP (เลือกได้หลายรูป)</p>
+        <button type="button" id="pick-btn" class="btn">เพิ่มรูป</button>
+        <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp" multiple hidden aria-label="เลือกไฟล์รูปภาพ">
+      </div>
+      <p id="upload-error" class="alert error" role="alert" hidden></p>
+
+      <div id="image-section" class="image-section" hidden>
+        <div class="toolbar image-toolbar">
+          <span id="image-count" class="muted"></span>
+          <button type="button" id="clear-images-btn" class="btn btn-small btn-danger">ลบรูปทั้งหมด</button>
+        </div>
+        <ul id="image-grid" class="thumb-grid" aria-label="รายการรูปภาพ"></ul>
+      </div>
+    </section>
+
+    <!-- SECTION 2: settings -->
+    <section class="card" aria-labelledby="h-settings">
+      <h2 id="h-settings">2. ตั้งค่าและประมวลผล</h2>
+      <fieldset>
+        <legend>จำนวนชุดที่ต้องการ</legend>
+        <div class="chips" role="radiogroup" aria-label="จำนวนชุดที่ต้องการ">
+          <label class="chip"><input type="radio" name="qty" value="10"><span>10</span></label>
+          <label class="chip"><input type="radio" name="qty" value="50"><span>50</span></label>
+          <label class="chip"><input type="radio" name="qty" value="100"><span>100</span></label>
+          <label class="chip"><input type="radio" name="qty" value="all" checked><span>ทั้งหมด</span></label>
+          <label class="chip"><input type="radio" name="qty" value="custom"><span>กำหนดเอง</span></label>
+        </div>
+        <div id="custom-wrap" class="field-inline" hidden>
+          <label for="custom-qty">จำนวนที่กำหนดเอง (อย่างน้อย 1)</label>
+          <input type="number" id="custom-qty" min="1" step="1" value="20" inputmode="numeric">
+        </div>
+      </fieldset>
+
+      <label class="check">
+        <input type="checkbox" id="fix-confusions" checked>
+        <span>แก้ตัวอักษรที่ OCR มักอ่านสลับกับตัวเลข</span>
+      </label>
+
+      <fieldset>
+        <legend>แบ่งกลุ่มในไฟล์ Word</legend>
+        <div class="chips" role="radiogroup" aria-label="แบ่งกลุ่มในไฟล์ Word">
+          <label class="chip"><input type="radio" name="group" value="none" checked><span>ไม่แบ่ง</span></label>
+          <label class="chip"><input type="radio" name="group" value="5"><span>ทีละ 5</span></label>
+          <label class="chip"><input type="radio" name="group" value="10"><span>ทีละ 10</span></label>
+          <label class="chip"><input type="radio" name="group" value="custom"><span>กำหนดเอง</span></label>
+        </div>
+        <div id="group-custom-wrap" class="field-inline" hidden>
+          <label for="group-custom">จำนวนต่อกลุ่ม (อย่างน้อย 1)</label>
+          <input type="number" id="group-custom" min="1" step="1" value="10" inputmode="numeric">
+        </div>
+        <div class="field-inline">
+          <label for="group-label">ข้อความหัวกลุ่ม</label>
+          <input type="text" id="group-label" value="กลุ่มที่" maxlength="60" autocomplete="off">
+          <p id="group-preview" class="muted"></p>
+        </div>
+      </fieldset>
+
+      <button type="button" id="run-btn" class="btn btn-primary" disabled>เริ่มอ่านข้อความ</button>
+      <button type="button" id="rerun-all-btn" class="btn btn-block" disabled>อ่านใหม่ทั้งหมด</button>
+
+      <progress id="progress" max="1" value="0" hidden aria-label="ความคืบหน้าการอ่านข้อความ"></progress>
+      <p id="progress-text" class="progress-text" hidden></p>
+      <div id="alert" class="alert" role="status" aria-live="polite" hidden></div>
+    </section>
+  </div>
+
+  <!-- SECTION 3: results -->
+  <section class="card" aria-labelledby="h-results">
+    <h2 id="h-results">3. ผลลัพธ์</h2>
+    <p id="counters" class="counters" aria-live="polite"></p>
+    <div id="result-msg" class="alert warning" role="status" aria-live="polite" hidden></div>
+
+    <div class="toolbar">
+      <button type="button" id="select-toggle" class="btn btn-small">เลือกทั้งหมด / ยกเลิก</button>
+      <button type="button" id="copy-selected" class="btn btn-small" disabled>คัดลอกที่เลือก</button>
+      <button type="button" id="copy-all" class="btn btn-small" disabled>คัดลอกทั้งหมด</button>
+      <button type="button" id="copy-word" class="btn btn-small" disabled>คัดลอกสำหรับ Word</button>
+      <button type="button" id="download-docx" class="btn btn-small" disabled>ดาวน์โหลด Word (.docx)</button>
+      <button type="button" id="add-row" class="btn btn-small">+ เพิ่มแถว</button>
+      <button type="button" id="clear-results" class="btn btn-small btn-danger" disabled>ล้างผลลัพธ์ทั้งหมด</button>
+    </div>
+
+    <ul id="rows" class="rows" aria-label="รายการชุดตัวเลข"></ul>
+    <p id="empty" class="empty">ยังไม่มีผลลัพธ์ กรุณาเพิ่มรูปแล้วกดเริ่มอ่านข้อความ</p>
+
+    <details id="near-details">
+      <summary>ตัวเลขที่ยาวไม่ครบ/เกิน 10 หลัก (ไม่ถูกรวมอัตโนมัติ)</summary>
+      <ul id="near-list" class="near-list"></ul>
+      <p id="near-empty" class="muted" hidden>ไม่มีรายการ</p>
+    </details>
+
+    <details>
+      <summary>ข้อความดิบจาก OCR (แยกตามรูป)</summary>
+      <div id="raw-list" class="raw-list"></div>
+    </details>
+  </section>
+</main>
+
+<footer class="footer">
+  <p class="flow">อัปโหลด → อ่าน → กรอง 10 หลัก → เลือกจำนวน → ตรวจสอบ → ส่งออก Word</p>
+</footer>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<script>
+/* @pure-start */
+// Pure logic. Every number stays a string from OCR to export.
+
+const CONFUSION_MAP = {
+  O: '0', o: '0', Q: '0', D: '0',
+  I: '1', l: '1', '|': '1', i: '1', '!': '1',
+  Z: '2', z: '2',
+  S: '5', s: '5',
+  B: '8',
+  G: '6'
+};
+const CONFUSION_CHARS_RE = /[OoQDIl|i!ZzSsBG]/g;
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const CONTENT_TYPES_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+  '<Default Extension="xml" ContentType="application/xml"/>' +
+  '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+  '</Types>';
+const ROOT_RELS_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+  '</Relationships>';
+
+function isValidSet(value) {
+  return typeof value === 'string' && /^\d{10}$/.test(value);
+}
+
+// Maximal runs of characters that OCR may have confused with digits.
+const CONFUSABLE_RUN_RE = /[0-9OoQDIl|i!ZzSsBG]+/g;
+
+function convertConfusables(s) {
+  return s.replace(CONFUSION_CHARS_RE, (ch) => CONFUSION_MAP[ch]);
+}
+
+// Converts confusable letters inside each maximal run, but only when the run yields exactly
+// 10 characters with >= 6 real digits. Letters at the ends of a longer run are stripped
+// (left as-is, acting as separators) until the window is 10 chars. Anything else is unchanged.
+function fixConfusionsInLine(line) {
+  return line.replace(CONFUSABLE_RUN_RE, (run) => {
+    let start = 0;
+    let end = run.length;
+    while (end - start > 10 && !/\d/.test(run[start])) start++;
+    while (end - start > 10 && !/\d/.test(run[end - 1])) end--;
+    if (end - start !== 10) return run;
+    const core = run.slice(start, end);
+    if ((core.match(/\d/g) || []).length < 6) return run;
+    return run.slice(0, start) + convertConfusables(core) + run.slice(end);
+  });
+}
+
+// Joins digit groups separated by single '-' or ' ' within one maximal sequence.
+// Exact: a greedy window of groups totalling 10 digits, >= 2 groups, every group >= 2 digits,
+// first group >= 3 digits. Near miss: the whole sequence (>= 2 groups, every group >= 2 digits)
+// totalling 8, 9, 11 or 12 digits is joined so it is reported as one number.
+// Sequence boundaries (non-digit, non-separator) keep results from touching other digits.
+function mergeSplitSequence(seq) {
+  const runs = [];
+  const re = /\d+/g;
+  let m;
+  while ((m = re.exec(seq)) !== null) {
+    runs.push({ start: m.index, end: m.index + m[0].length, digits: m[0] });
+  }
+  const allGroupsOk = runs.length >= 2 && runs.every((r) => r.digits.length >= 2);
+  const wholeTotal = runs.reduce((s, r) => s + r.digits.length, 0);
+  if (allGroupsOk && [8, 9, 11, 12].includes(wholeTotal)) {
+    return runs.map((r) => r.digits).join('');
+  }
+  let out = '';
+  let pos = 0;
+  let i = 0;
+  while (i < runs.length) {
+    let total = 0;
+    let j = i;
+    while (j < runs.length && total + runs[j].digits.length <= 10) {
+      total += runs[j].digits.length;
+      j++;
+    }
+    const group = runs.slice(i, j);
+    const ok = total === 10 && group.length >= 2 &&
+      group.every((r) => r.digits.length >= 2) && group[0].digits.length >= 3;
+    if (ok) {
+      out += seq.slice(pos, runs[i].start) + group.map((r) => r.digits).join('');
+      pos = runs[j - 1].end;
+      i = j;
+    } else {
+      i++;
+    }
+  }
+  return out + seq.slice(pos);
+}
+
+// Sets checked on OCR rows by their position among OCR rows only (manual rows untouched).
+// target: a count, Infinity for "all", or null for an invalid custom value (selects none).
+function applyOcrSelection(rows, target) {
+  let n = 0;
+  for (const row of rows) {
+    if (row.source === 'ocr') {
+      const k = n++;
+      row.checked = target !== null && k < target;
+    }
+  }
+  return rows;
+}
+
+function extractNumbers(text, fixConfusions) {
+  const exact = [];
+  const nearMiss = [];
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  for (const raw of lines) {
+    let line = fixConfusions ? fixConfusionsInLine(raw) : raw;
+    line = line.replace(/\d+(?:[- ]\d+)+/g, mergeSplitSequence);
+    const runs = line.match(/\d+/g) || [];
+    for (const run of runs) {
+      if (run.length === 10) {
+        exact.push(run);
+      } else if (run.length === 8 || run.length === 9 || run.length === 11 || run.length === 12) {
+        nearMiss.push(run);
+      }
+    }
+  }
+  return { exact, nearMiss };
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '') // illegal in XML; Word rejects the file
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Splits values into consecutive groups of `size`, numbered from 1. size null or 0 means one group.
+function groupValues(values, size) {
+  if (values.length === 0) return [];
+  if (!size) {
+    return [{ index: 1, start: 1, end: values.length, values: values.slice() }];
+  }
+  const groups = [];
+  for (let i = 0; i < values.length; i += size) {
+    const chunk = values.slice(i, i + size);
+    groups.push({ index: groups.length + 1, start: i + 1, end: i + chunk.length, values: chunk });
+  }
+  return groups;
+}
+
+function numberParagraphXml(v) {
+  return '<w:p><w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:sz w:val="24"/></w:rPr>' +
+    '<w:t xml:space="preserve">' + escapeXml(v) + '</w:t></w:r></w:p>';
+}
+
+function groupLabelParagraphXml(text) {
+  return '<w:p><w:pPr><w:spacing w:before="240"/></w:pPr><w:r><w:rPr>' +
+    '<w:rFonts w:ascii="Tahoma" w:hAnsi="Tahoma" w:cs="Tahoma"/><w:b/><w:bCs/></w:rPr>' +
+    '<w:t xml:space="preserve">' + escapeXml(text) + '</w:t></w:r></w:p>';
+}
+
+const GROUP_SEPARATOR_XML =
+  '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="999999"/></w:pBdr>' +
+  '<w:spacing w:before="0" w:after="120"/></w:pPr></w:p>';
+
+function formatGroupLabel(prefix, g) {
+  return prefix + ' ' + g.index + ' (ลำดับ ' + g.start + '–' + g.end + ')';
+}
+
+function groupOptsOf(opts) {
+  return {
+    groupSize: opts && opts.groupSize ? opts.groupSize : null,
+    labelPrefix: opts && opts.labelPrefix != null ? String(opts.labelPrefix) : 'กลุ่มที่'
+  };
+}
+
+// Plain text for the clipboard: one number per line; with grouping, a label line before each group
+// and a blank line between groups.
+function buildPlainText(values, opts) {
+  const o = groupOptsOf(opts);
+  if (!o.groupSize) return values.join('\n');
+  return groupValues(values, o.groupSize)
+    .map((g) => [formatGroupLabel(o.labelPrefix, g)].concat(g.values).join('\n'))
+    .join('\n\n');
+}
+
+// HTML for Word paste: numbers in Consolas; with grouping, a bold label per group and <hr> between groups.
+function buildWordHtml(values, opts) {
+  const o = groupOptsOf(opts);
+  const numberP = (v) => '<p style="margin:0;font-family:Consolas,monospace">' + escapeXml(v) + '</p>';
+  if (!o.groupSize) return values.map(numberP).join('');
+  return groupValues(values, o.groupSize)
+    .map((g, gi) => (gi > 0 ? '<hr>' : '') +
+      '<p style="margin:0;font-family:Tahoma"><b>' + escapeXml(formatGroupLabel(o.labelPrefix, g)) + '</b></p>' +
+      g.values.map(numberP).join(''))
+    .join('');
+}
+
+// opts: { groupSize, labelPrefix }. Without a groupSize the output is numbers only.
+function buildDocumentXml(values, opts) {
+  const groupSize = opts && opts.groupSize ? opts.groupSize : null;
+  const prefix = opts && opts.labelPrefix != null ? String(opts.labelPrefix) : 'กลุ่มที่';
+  const paras = [];
+  if (!groupSize) {
+    for (const v of values) paras.push(numberParagraphXml(v));
+  } else {
+    groupValues(values, groupSize).forEach((g, gi) => {
+      if (gi > 0) paras.push(GROUP_SEPARATOR_XML);
+      paras.push(groupLabelParagraphXml(formatGroupLabel(prefix, g)));
+      for (const v of g.values) paras.push(numberParagraphXml(v));
+    });
+  }
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:body>' + paras.join('') + '<w:sectPr/></w:body></w:document>';
+}
+
+function buildFileStamp(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+/* @pure-end */
+
+/* ---------- DOM and state ---------- */
+
+const ACCEPTED_TYPES = {
+  'image/jpeg': ['jpg', 'jpeg'],
+  'image/png': ['png'],
+  'image/webp': ['webp']
+};
+const MIME_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+const PRESET_COUNTS = { '10': 10, '50': 50, '100': 100 };
+const GROUP_PRESETS = { '5': 5, '10': 10 };
+const OCR_MIN_SIDE = 2000;
+const OCR_MAX_SIDE = 4000;
+const STATUS_TEXT = { wait: 'รอ', reading: 'กำลังอ่าน', error: 'ผิดพลาด' };
+
+const $ = (sel) => document.querySelector(sel);
+const els = {
+  dropzone: $('#dropzone'),
+  fileInput: $('#file-input'),
+  pickBtn: $('#pick-btn'),
+  uploadError: $('#upload-error'),
+  imageSection: $('#image-section'),
+  imageCount: $('#image-count'),
+  imageGrid: $('#image-grid'),
+  clearImagesBtn: $('#clear-images-btn'),
+  customWrap: $('#custom-wrap'),
+  customQty: $('#custom-qty'),
+  fixCheck: $('#fix-confusions'),
+  groupCustomWrap: $('#group-custom-wrap'),
+  groupCustom: $('#group-custom'),
+  groupLabel: $('#group-label'),
+  groupPreview: $('#group-preview'),
+  runBtn: $('#run-btn'),
+  rerunAllBtn: $('#rerun-all-btn'),
+  progress: $('#progress'),
+  progressText: $('#progress-text'),
+  alert: $('#alert'),
+  counters: $('#counters'),
+  resultMsg: $('#result-msg'),
+  selectToggle: $('#select-toggle'),
+  copySelected: $('#copy-selected'),
+  copyAll: $('#copy-all'),
+  copyWord: $('#copy-word'),
+  downloadDocx: $('#download-docx'),
+  addRow: $('#add-row'),
+  clearResults: $('#clear-results'),
+  rows: $('#rows'),
+  empty: $('#empty'),
+  nearList: $('#near-list'),
+  nearEmpty: $('#near-empty'),
+  rawList: $('#raw-list'),
+  toast: $('#toast')
+};
+
+const state = {
+  // {id, file, url, status: 'wait' | 'reading' | 'done' | 'error', error, rawText, exact: [], near: []}
+  images: [],
+  // {id, value, checked, source: 'ocr' | 'manual', imageIndex, edited, nearKey}
+  rows: [],
+  ocrDirty: false,     // true when OCR rows were edited, deleted, or checkbox-toggled by hand
+  nextRowId: 1,
+  nextImageId: 1,
+  workerPromise: null,
+  running: false,
+  progressCtx: null    // {pos, total} while OCR runs
+};
+
+/* ---------- small helpers ---------- */
+
+// Native <dialog> when available, otherwise a plain fixed overlay. Resolves true for OK, false otherwise.
+function confirmDialog(message, opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    const prevFocus = document.activeElement;
+    const useDialog = typeof HTMLDialogElement === 'function' &&
+      typeof HTMLDialogElement.prototype.showModal === 'function';
+
+    const box = document.createElement('div');
+    box.className = 'confirm-box';
+    const msg = document.createElement('p');
+    msg.id = 'confirm-msg';
+    msg.textContent = message;
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn';
+    cancelBtn.textContent = o.cancelText || 'ยกเลิก';
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'btn btn-ok' + (o.danger ? ' danger' : '');
+    okBtn.textContent = o.okText || 'ตกลง';
+    actions.append(cancelBtn, okBtn);
+    box.append(msg, actions);
+
+    const root = useDialog ? document.createElement('dialog') : document.createElement('div');
+    root.className = useDialog ? 'confirm-dialog' : 'confirm-overlay';
+    root.setAttribute('role', 'alertdialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-labelledby', 'confirm-msg');
+    root.appendChild(box);
+
+    let settled = false;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    };
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      if (!useDialog) document.removeEventListener('keydown', onKey, true);
+      if (useDialog && root.open) root.close();
+      root.remove();
+      if (prevFocus && typeof prevFocus.focus === 'function' && document.contains(prevFocus)) prevFocus.focus();
+      resolve(value);
+    }
+    cancelBtn.addEventListener('click', () => finish(false));
+    okBtn.addEventListener('click', () => finish(true));
+    // A click on the backdrop lands on the root itself, not on the box inside it.
+    root.addEventListener('click', (e) => { if (e.target === root) finish(false); });
+
+    if (useDialog) {
+      root.addEventListener('cancel', (e) => { e.preventDefault(); finish(false); });
+      document.body.appendChild(root);
+      root.showModal();
+    } else {
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(root);
+    }
+    okBtn.focus();
+  });
+}
+
+function setAlert(type, message) {
+  if (!message) {
+    els.alert.hidden = true;
+    els.alert.textContent = '';
+    return;
+  }
+  els.alert.className = 'alert ' + type;
+  els.alert.textContent = message;
+  els.alert.hidden = false;
+}
+
+function showUploadError(message) {
+  els.uploadError.textContent = message || '';
+  els.uploadError.hidden = !message;
+}
+
+function showProgress(label, ratio) {
+  const r = Math.min(1, Math.max(0, ratio));
+  els.progress.hidden = false;
+  els.progress.value = r;
+  els.progressText.hidden = false;
+  els.progressText.textContent = label + ' ' + Math.round(r * 100) + '%';
+}
+
+function hideProgress() {
+  els.progress.hidden = true;
+  els.progressText.hidden = true;
+}
+
+let toastTimer = null;
+function toast(message) {
+  els.toast.textContent = message;
+  els.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { els.toast.hidden = true; }, 2800);
+}
+
+function formatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function describeError(err) {
+  return err && err.message ? err.message : String(err);
+}
+
+function statusText(img) {
+  if (img.status === 'done') return 'เสร็จ (' + img.exact.length + ' ชุด)';
+  return STATUS_TEXT[img.status] || img.status;
+}
+
+function doneImages() {
+  return state.images.filter((img) => img.status === 'done');
+}
+
+function hasResult() {
+  return state.images.some((img) => img.status === 'done');
+}
+
+function detectedCount() {
+  return doneImages().reduce((s, img) => s + img.exact.length, 0);
+}
+
+function markEdited(row) {
+  if (row.source === 'ocr') {
+    row.edited = true;
+    state.ocrDirty = true;
+  }
+}
+
+/* ---------- images ---------- */
+
+function validateImageFile(file) {
+  const allowedExts = ACCEPTED_TYPES[file.type];
+  if (!allowedExts) {
+    return 'รองรับเฉพาะไฟล์ JPG, JPEG, PNG และ WEBP เท่านั้น';
+  }
+  const name = file.name || '';
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  if (!allowedExts.includes(ext)) {
+    return 'นามสกุลไฟล์ไม่ตรงกับชนิดของรูปภาพ (รองรับ JPG, JPEG, PNG, WEBP)';
+  }
+  return null;
+}
+
+// Appends valid images to the list; invalid ones are skipped and named in a toast.
+function acceptFiles(files) {
+  if (state.running) {
+    toast('กำลังประมวลผล กรุณารอสักครู่');
+    return;
+  }
+  const skipped = [];
+  let added = 0;
+  for (const file of files) {
+    if (validateImageFile(file)) {
+      skipped.push(file.name || 'ไม่ทราบชื่อไฟล์');
+      continue;
+    }
+    state.images.push({
+      id: state.nextImageId++,
+      file,
+      url: URL.createObjectURL(file),
+      status: 'wait',
+      error: '',
+      rawText: '',
+      exact: [],
+      near: []
+    });
+    added++;
+  }
+  if (added > 0) showUploadError('');
+  if (skipped.length > 0) {
+    toast('ข้ามไฟล์ที่ไม่รองรับ: ' + skipped.join(', '));
+  }
+  if (added > 0) render();
+}
+
+async function removeImage(img) {
+  if (state.running) {
+    toast('กำลังประมวลผล กรุณารอสักครู่');
+    return;
+  }
+  const i = state.images.indexOf(img);
+  if (i < 0) return;
+  const hasEdits = state.rows.some((r) => r.source === 'ocr' && r.imageIndex === i && r.edited);
+  if (hasEdits) {
+    const ok = await confirmDialog(
+      'รูปที่ ' + (i + 1) + ' มีรายการที่แก้ไขไว้ การลบรูปจะลบรายการของรูปนี้ด้วย ต้องการดำเนินการต่อหรือไม่?',
+      { okText: 'ลบรูป', danger: true }
+    );
+    if (!ok) return;
+  }
+  const j = state.images.indexOf(img); // the list may have changed while the dialog was open
+  if (j < 0 || state.running) return;
+  URL.revokeObjectURL(img.url);
+  state.images.splice(j, 1);
+  state.rows = state.rows.filter((r) => !(r.source === 'ocr' && r.imageIndex === j));
+  for (const r of state.rows) {
+    if (r.source === 'ocr' && r.imageIndex > j) r.imageIndex -= 1;
+  }
+  if (state.images.length === 0) showUploadError('');
+  if (!state.rows.some((r) => r.source === 'ocr')) state.ocrDirty = false;
+  orderRows();
+  applySelection();
+  render();
+}
+
+async function clearAllImages() {
+  if (state.running) {
+    toast('กำลังประมวลผล กรุณารอสักครู่');
+    return;
+  }
+  if (state.images.length === 0) return;
+  const ok = await confirmDialog(
+    'ลบรูปทั้งหมดใช่หรือไม่? รายการที่อ่านจากรูปเหล่านี้จะถูกลบด้วย (รายการที่เพิ่มเองจะยังอยู่)',
+    { okText: 'ลบทั้งหมด', danger: true }
+  );
+  if (!ok || state.running) return;
+  state.images.forEach((img) => URL.revokeObjectURL(img.url));
+  state.images = [];
+  state.rows = state.rows.filter((r) => r.source !== 'ocr');
+  state.ocrDirty = false;
+  showUploadError('');
+  setAlert('', '');
+  applySelection();
+  render();
+}
+
+function moveImage(img, delta) {
+  if (state.running) {
+    toast('กำลังประมวลผล กรุณารอสักครู่');
+    return;
+  }
+  const i = state.images.indexOf(img);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= state.images.length) return;
+  [state.images[i], state.images[j]] = [state.images[j], state.images[i]];
+  for (const r of state.rows) {
+    if (r.source !== 'ocr') continue;
+    if (r.imageIndex === i) r.imageIndex = j;
+    else if (r.imageIndex === j) r.imageIndex = i;
+  }
+  orderRows();
+  applySelection();
+  render();
+}
+
+function bindUpload() {
+  els.pickBtn.addEventListener('click', () => els.fileInput.click());
+  els.fileInput.addEventListener('change', (e) => {
+    const files = Array.from((e.target.files) || []);
+    e.target.value = ''; // allows picking the same file again later
+    if (files.length) acceptFiles(files);
+  });
+
+  const dz = els.dropzone;
+  ['dragenter', 'dragover'].forEach((type) => {
+    dz.addEventListener(type, (e) => {
+      e.preventDefault();
+      dz.classList.add('dragover');
+    });
+  });
+  ['dragleave', 'dragend'].forEach((type) => {
+    dz.addEventListener(type, (e) => {
+      if (!dz.contains(e.relatedTarget)) dz.classList.remove('dragover');
+    });
+  });
+  dz.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (files.length) acceptFiles(files);
+    else showUploadError('ไม่พบไฟล์ในสิ่งที่ลาก');
+  });
+  // Stop the browser from opening a file dropped outside the zone.
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => e.preventDefault());
+
+  document.addEventListener('paste', (e) => {
+    const items = Array.from((e.clipboardData && e.clipboardData.items) || [])
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    if (items.length === 0) return;
+    e.preventDefault();
+    const stamp = buildFileStamp(new Date());
+    const files = [];
+    items.forEach((it, k) => {
+      const blob = it.getAsFile();
+      if (!blob) return;
+      const ext = MIME_EXT[blob.type] || 'img';
+      const suffix = items.length > 1 ? '-' + (k + 1) : '';
+      files.push(new File([blob], 'clipboard-' + stamp + suffix + '.' + ext, { type: blob.type }));
+    });
+    if (files.length) acceptFiles(files);
+  });
+
+  els.clearImagesBtn.addEventListener('click', clearAllImages);
+}
+
+/* ---------- quantity, grouping and selection ---------- */
+
+// Returns the chosen count, Infinity for "all", or null when the custom value is invalid.
+function getTargetCount() {
+  const checked = document.querySelector('input[name="qty"]:checked');
+  const mode = checked ? checked.value : 'all';
+  if (mode === 'all') return Infinity;
+  if (mode === 'custom') {
+    const v = els.customQty.valueAsNumber;
+    return v >= 1 && v % 1 === 0 ? v : null;
+  }
+  return PRESET_COUNTS[mode];
+}
+
+function applySelection() {
+  applyOcrSelection(state.rows, getTargetCount());
+}
+
+function onQuantityChange() {
+  const checked = document.querySelector('input[name="qty"]:checked');
+  els.customWrap.hidden = !(checked && checked.value === 'custom');
+  applySelection();
+  render();
+}
+
+function getGroupMode() {
+  const checked = document.querySelector('input[name="group"]:checked');
+  return checked ? checked.value : 'none';
+}
+
+// Group size as a count, or null when grouping is off or the custom value is invalid.
+function getGroupSize() {
+  const mode = getGroupMode();
+  if (mode === 'none') return null;
+  if (mode === 'custom') {
+    const v = els.groupCustom.valueAsNumber;
+    return v >= 1 && v % 1 === 0 ? v : null;
+  }
+  return GROUP_PRESETS[mode] || null;
+}
+
+function groupOpts() {
+  return {
+    groupSize: getGroupSize(),
+    labelPrefix: els.groupLabel.value.trim() || 'กลุ่มที่'
+  };
+}
+
+function updateGroupPreview() {
+  const mode = getGroupMode();
+  const size = getGroupSize();
+  els.groupCustomWrap.hidden = mode !== 'custom';
+  let text;
+  if (mode === 'none') {
+    text = 'ไม่แบ่งกลุ่ม: ส่งออกตัวเลขต่อเนื่องกัน';
+  } else if (!size) {
+    text = 'กรอกจำนวนต่อกลุ่มอย่างน้อย 1 เพื่อแบ่งกลุ่ม';
+  } else {
+    text = 'ตัวอย่างหัวกลุ่ม: ' + formatGroupLabel(groupOpts().labelPrefix, { index: 1, start: 1, end: size });
+  }
+  els.groupPreview.textContent = text;
+}
+
+function onGroupSettingsChange() {
+  updateGroupPreview();
+  renderGroupDividers();
+  updateSummary();
+}
+
+function isRowValid(row) {
+  return isValidSet(row.value);
+}
+
+function selectedValidValues() {
+  return state.rows.filter((r) => r.checked && isRowValid(r)).map((r) => r.value);
+}
+
+function allValidValues() {
+  return state.rows.filter(isRowValid).map((r) => r.value);
+}
+
+// Keeps OCR rows in image order (reading order within an image is kept by stable sort); manual rows last.
+function orderRows() {
+  const key = (r) => (r.source === 'ocr' ? r.imageIndex : Infinity);
+  state.rows.sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    return ka === kb ? 0 : (ka < kb ? -1 : 1);
+  });
+}
+
+function addOcrRows(index) {
+  const img = state.images[index];
+  for (const value of img.exact) {
+    state.rows.push({ id: state.nextRowId++, value, checked: false, source: 'ocr', imageIndex: index, edited: false });
+  }
+}
+
+// Extracts numbers from an image's stored raw text and adds its OCR rows.
+function finishImage(img) {
+  const det = extractNumbers(img.rawText, els.fixCheck.checked);
+  img.exact = det.exact;
+  img.near = det.nearMiss;
+  img.status = 'done';
+  img.error = '';
+  addOcrRows(state.images.indexOf(img));
+  orderRows();
+  applySelection();
+}
+
+/* ---------- OCR ---------- */
+
+function loadSource(file) {
+  if (typeof createImageBitmap === 'function') {
+    return createImageBitmap(file).catch(() => loadViaImage(file));
+  }
+  return loadViaImage(file);
+}
+
+function loadViaImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('เปิดไฟล์รูปไม่ได้')); };
+    img.src = url;
+  });
+}
+
+function percentileOf(hist, total, p) {
+  const target = total * p;
+  let acc = 0;
+  for (let v = 0; v < 256; v++) {
+    acc += hist[v];
+    if (acc >= target) return v;
+  }
+  return 255;
+}
+
+// Upscale to a longer side of about 2000px (capped at 4000px), grayscale, then a mild contrast stretch.
+async function preprocessImage(file) {
+  const src = await loadSource(file);
+  const w0 = src.naturalWidth || src.width;
+  const h0 = src.naturalHeight || src.height;
+  const longSide = Math.max(w0, h0);
+  const target = Math.min(OCR_MAX_SIDE, Math.max(OCR_MIN_SIDE, longSide));
+  const scale = target / longSide;
+  const w = Math.round(w0 * scale);
+  const h = Math.round(h0 * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, w, h);
+  if (typeof src.close === 'function') src.close();
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const d = imageData.data;
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < d.length; i += 4) {
+    const y = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    d[i] = d[i + 1] = d[i + 2] = y;
+    hist[y]++;
+  }
+  const lo = percentileOf(hist, w * h, 0.01);
+  const hi = percentileOf(hist, w * h, 0.99);
+  const span = hi - lo;
+  if (span >= 16) {
+    const lut = new Uint8Array(256);
+    for (let v = 0; v < 256; v++) {
+      const stretched = ((v - lo) * 255) / span;
+      const blended = v + (stretched - v) * 0.5;
+      lut[v] = Math.max(0, Math.min(255, Math.round(blended)));
+    }
+    for (let i = 0; i < d.length; i += 4) {
+      const v = lut[d[i]];
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function handleOcrLog(m) {
+  if (!m || typeof m.status !== 'string') return;
+  const s = m.status;
+  const step = s.includes('recogn') ? 'กำลังอ่านข้อความ'
+    : s.includes('lang') ? 'กำลังโหลดชุดภาษา (eng)'
+    : 'กำลังเตรียมเครื่องมือ OCR';
+  const ctx = state.progressCtx;
+  const label = ctx ? 'รูปที่ ' + ctx.pos + '/' + ctx.total + ' · ' + step : step;
+  showProgress(label, typeof m.progress === 'number' ? m.progress : 0);
+}
+
+function getWorker() {
+  if (!state.workerPromise) {
+    state.workerPromise = (async () => {
+      // Engine and language data ship in ./vendor so OCR needs no third-party fetches.
+      // worker-wrap.js serves the language data from base64 text (see that file).
+      const vendor = new URL('vendor/', location.href).href;
+      const worker = await Tesseract.createWorker('eng', 1, {
+        logger: handleOcrLog,
+        workerPath: vendor + 'worker-wrap.js',
+        workerBlobURL: false, // the wrapper resolves its siblings from its own URL
+        corePath: vendor,
+        langPath: vendor,
+        cacheMethod: 'none'
+      });
+      await worker.setParameters({ preserve_interword_spaces: '1' });
+      return worker;
+    })().catch((err) => {
+      state.workerPromise = null;
+      throw err;
+    });
+  }
+  return state.workerPromise;
+}
+
+// Reads each target image in order with the single worker. A failed image is marked and skipped.
+async function startReading(targets) {
+  if (typeof Tesseract === 'undefined') {
+    setAlert('error', 'อ่านรูปภาพไม่สำเร็จ: โหลดไลบรารี OCR ไม่ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วรีเฟรชหน้า');
+    return;
+  }
+  state.running = true;
+  setAlert('', '');
+  updateControls();
+  let okCount = 0;
+  try {
+    for (const img of targets) {
+      const pos = state.images.indexOf(img) + 1;
+      if (pos === 0) continue;
+      state.progressCtx = { pos, total: state.images.length };
+      img.status = 'reading';
+      img.error = '';
+      render();
+      showProgress('รูปที่ ' + pos + '/' + state.images.length + ' · กำลังเตรียมรูปภาพ', 0);
+      try {
+        const canvas = await preprocessImage(img.file);
+        const worker = await getWorker();
+        const result = await worker.recognize(canvas);
+        img.rawText = (result && result.data && result.data.text) || '';
+        finishImage(img);
+        okCount++;
+      } catch (err) {
+        img.status = 'error';
+        img.error = describeError(err);
+      }
+      render();
+    }
+  } finally {
+    state.running = false;
+    state.progressCtx = null;
+    hideProgress();
+    render();
+  }
+  const total = targets.length;
+  setAlert(okCount === total ? 'success' : 'warning', 'อ่านสำเร็จ ' + okCount + '/' + total + ' รูป');
+}
+
+// Reads only images that are not done yet (keeps edits on finished images).
+async function runOcr() {
+  if (state.running) return;
+  const targets = state.images.filter((img) => img.status !== 'done');
+  if (targets.length === 0) {
+    toast('ไม่มีรูปที่ต้องอ่าน');
+    return;
+  }
+  await startReading(targets);
+}
+
+// Re-reads every image; hand edits to OCR rows are discarded after confirmation.
+async function rerunAll() {
+  if (state.running || state.images.length === 0) return;
+  if (typeof Tesseract === 'undefined') {
+    toast('โหลดไลบรารี OCR ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วรีเฟรชหน้า');
+    return;
+  }
+  if (state.ocrDirty) {
+    const ok = await confirmDialog('การแก้ไขในรายการจะหายไป ต้องการอ่านใหม่ทั้งหมดหรือไม่?', { okText: 'อ่านใหม่', danger: true });
+    if (!ok || state.running) return;
+  }
+  state.rows = state.rows.filter((r) => r.source !== 'ocr');
+  state.images.forEach((img) => {
+    img.status = 'wait';
+    img.error = '';
+    img.rawText = '';
+    img.exact = [];
+    img.near = [];
+  });
+  state.ocrDirty = false;
+  render();
+  await startReading(state.images.slice());
+}
+
+// Re-extracts numbers from the stored raw text of every finished image.
+async function onFixConfusionsChange() {
+  if (state.running) {
+    els.fixCheck.checked = !els.fixCheck.checked;
+    toast('กำลังประมวลผล กรุณารอสักครู่');
+    return;
+  }
+  if (!hasResult()) return;
+  if (state.ocrDirty) {
+    const ok = await confirmDialog('การแก้ไขในรายการจะหายไป ต้องการดำเนินการต่อหรือไม่?', { okText: 'ดำเนินการต่อ', danger: true });
+    if (!ok || state.running) {
+      els.fixCheck.checked = !els.fixCheck.checked;
+      return;
+    }
+  }
+  state.images.forEach((img) => {
+    if (img.status !== 'done') return;
+    const det = extractNumbers(img.rawText, els.fixCheck.checked);
+    img.exact = det.exact;
+    img.near = det.nearMiss;
+  });
+  state.rows = state.rows.filter((r) => r.source !== 'ocr');
+  state.images.forEach((img, i) => { if (img.status === 'done') addOcrRows(i); });
+  state.ocrDirty = false;
+  orderRows();
+  applySelection();
+  render();
+}
+
+// Clears all results. Images stay, and become "รอ" again.
+async function clearResults() {
+  if (state.running) return;
+  const ok = await confirmDialog('ล้างผลลัพธ์ทั้งหมดใช่หรือไม่? (รูปภาพยังคงอยู่)', { okText: 'ล้างผลลัพธ์', danger: true });
+  if (!ok || state.running) return;
+  state.rows = [];
+  state.images.forEach((img) => {
+    img.status = 'wait';
+    img.error = '';
+    img.rawText = '';
+    img.exact = [];
+    img.near = [];
+  });
+  state.ocrDirty = false;
+  setAlert('', '');
+  render();
+  toast('ล้างผลลัพธ์แล้ว');
+}
+
+/* ---------- results ---------- */
+
+function liFor(row) {
+  return els.rows.querySelector('li[data-row-id="' + row.id + '"]');
+}
+
+// Updates validity, duplicate badges, copy-button state and group dividers without rebuilding rows,
+// so focus and clicks on the row controls are not lost.
+function refreshRowMeta() {
+  const seen = new Map();
+  for (const row of state.rows) {
+    const li = liFor(row);
+    if (!li) continue;
+    const prev = seen.get(row.value) || 0;
+    seen.set(row.value, prev + 1);
+    const ok = isRowValid(row);
+    li.classList.toggle('invalid', !ok);
+    li.querySelector('.row-err').hidden = ok;
+    li.querySelector('.badge-dup').hidden = !(prev > 0 && row.value !== '');
+    li.querySelector('.btn-copy-row').disabled = !ok;
+  }
+  renderGroupDividers();
+}
+
+// Divider rows before each group, computed from the selected valid rows only.
+function renderGroupDividers() {
+  els.rows.querySelectorAll('.group-divider').forEach((d) => d.remove());
+  const size = getGroupSize();
+  if (!size) return;
+  const counted = state.rows.filter((r) => r.checked && isRowValid(r));
+  const prefix = groupOpts().labelPrefix;
+  const startRowIds = new Map();
+  groupValues(counted.map((r) => r.value), size).forEach((g) => {
+    startRowIds.set(counted[g.start - 1].id, g);
+  });
+  for (const row of state.rows) {
+    const g = startRowIds.get(row.id);
+    if (!g) continue;
+    const li = liFor(row);
+    if (!li) continue;
+    const divider = document.createElement('li');
+    divider.className = 'group-divider';
+    divider.setAttribute('role', 'presentation');
+    divider.textContent = formatGroupLabel(prefix, g);
+    const note = document.createElement('span');
+    note.className = 'muted';
+    note.textContent = 'นับเฉพาะรายการที่เลือกและครบ 10 หลัก';
+    divider.appendChild(note);
+    els.rows.insertBefore(divider, li);
+  }
+}
+
+function renderImages() {
+  els.imageGrid.replaceChildren();
+  els.imageSection.hidden = state.images.length === 0;
+  els.imageCount.textContent = state.images.length ? 'รวม ' + state.images.length + ' รูป' : '';
+  const locked = state.running;
+  state.images.forEach((img, i) => {
+    const card = document.createElement('li');
+    card.className = 'thumb-card';
+
+    const head = document.createElement('div');
+    head.className = 'thumb-head';
+    const title = document.createElement('span');
+    title.textContent = 'รูปที่ ' + (i + 1);
+    const status = document.createElement('span');
+    status.className = 'status ' + img.status;
+    status.textContent = statusText(img);
+    if (img.error) status.title = img.error;
+    head.append(title, status);
+
+    const thumb = document.createElement('img');
+    thumb.src = img.url;
+    thumb.alt = 'ตัวอย่างรูปที่ ' + (i + 1);
+
+    const name = document.createElement('div');
+    name.className = 'thumb-name mono';
+    name.textContent = img.file.name;
+    const meta = document.createElement('div');
+    meta.className = 'muted';
+    meta.textContent = formatBytes(img.file.size);
+
+    const mk = (text, label, extraClass, disabled, onClick) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-small ' + (extraClass || '');
+      b.textContent = text;
+      b.setAttribute('aria-label', label);
+      b.disabled = disabled;
+      b.addEventListener('click', onClick);
+      return b;
+    };
+    const actions = document.createElement('div');
+    actions.className = 'thumb-actions';
+    actions.append(
+      mk('▲', 'เลื่อนรูปที่ ' + (i + 1) + ' ขึ้น', '', locked || i === 0, () => moveImage(img, -1)),
+      mk('▼', 'เลื่อนรูปที่ ' + (i + 1) + ' ลง', '', locked || i === state.images.length - 1, () => moveImage(img, 1)),
+      mk('×', 'ลบรูปที่ ' + (i + 1), 'btn-danger', locked, () => removeImage(img))
+    );
+
+    card.append(head, thumb, name, meta, actions);
+    els.imageGrid.appendChild(card);
+  });
+}
+
+function renderRows() {
+  els.rows.replaceChildren();
+  state.rows.forEach((row, idx) => {
+    const li = document.createElement('li');
+    li.className = 'row';
+    li.dataset.rowId = String(row.id);
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = row.checked;
+    cb.setAttribute('aria-label', 'เลือกชุดที่ ' + (idx + 1));
+    cb.addEventListener('change', () => {
+      row.checked = cb.checked;
+      markEdited(row);
+      refreshRowMeta();
+      updateSummary();
+    });
+
+    const index = document.createElement('span');
+    index.className = 'idx';
+    index.textContent = String(idx + 1);
+
+    const main = document.createElement('div');
+    main.className = 'row-main';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'value';
+    input.inputMode = 'numeric';
+    input.maxLength = 10;
+    input.autocomplete = 'off';
+    input.value = row.value;
+    input.id = 'val-' + row.id;
+    input.setAttribute('aria-label', 'ตัวเลขชุดที่ ' + (idx + 1));
+    input.setAttribute('aria-describedby', 'err-' + row.id);
+    input.addEventListener('input', () => {
+      const clean = input.value.replace(/\D/g, '');
+      if (clean !== input.value) input.value = clean;
+      if (clean !== row.value) markEdited(row);
+      row.value = clean;
+      refreshRowMeta();
+      updateSummary();
+    });
+    input.addEventListener('change', () => {
+      // No full re-render here: it would rebuild the rows and swallow the next click.
+      refreshRowMeta();
+      updateSummary();
+    });
+
+    const err = document.createElement('span');
+    err.className = 'row-err';
+    err.id = 'err-' + row.id;
+    err.textContent = 'ต้องมี 10 หลัก';
+
+    const dup = document.createElement('span');
+    dup.className = 'badge badge-dup';
+    dup.textContent = 'ซ้ำ';
+    dup.hidden = true;
+
+    main.append(input, err, dup);
+    if (row.source === 'ocr') {
+      const imgBadge = document.createElement('span');
+      imgBadge.className = 'badge badge-img';
+      imgBadge.textContent = 'รูป ' + (row.imageIndex + 1);
+      main.appendChild(imgBadge);
+    }
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn btn-small btn-copy-row';
+    copyBtn.textContent = 'คัดลอก';
+    copyBtn.setAttribute('aria-label', 'คัดลอกชุดที่ ' + (idx + 1));
+    copyBtn.addEventListener('click', async () => {
+      const ok = await copyText(row.value);
+      toast(ok ? 'คัดลอกแล้ว 1 ชุด' : 'คัดลอกไม่สำเร็จ');
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn btn-small btn-danger';
+    delBtn.textContent = 'ลบ';
+    delBtn.setAttribute('aria-label', 'ลบแถวที่ ' + (idx + 1));
+    delBtn.addEventListener('click', () => {
+      markEdited(row);
+      state.rows = state.rows.filter((r) => r !== row);
+      render();
+    });
+
+    li.append(cb, index, main, copyBtn, delBtn);
+    els.rows.appendChild(li);
+  });
+  refreshRowMeta();
+}
+
+function renderNearMiss() {
+  els.nearList.replaceChildren();
+  let total = 0;
+  state.images.forEach((img, i) => {
+    img.near.forEach((value) => {
+      total++;
+      const key = img.id + ':' + value;
+      const li = document.createElement('li');
+      const text = document.createElement('span');
+      text.className = 'mono';
+      text.textContent = value;
+      const len = document.createElement('span');
+      len.className = 'muted';
+      len.textContent = '(' + value.length + ' หลัก)';
+      const badge = document.createElement('span');
+      badge.className = 'badge badge-img';
+      badge.textContent = 'รูป ' + (i + 1);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-small';
+      const used = state.rows.some((r) => r.nearKey === key);
+      btn.textContent = used ? 'เพิ่มแล้ว' : 'เพิ่มเข้าในรายการ';
+      btn.disabled = used;
+      btn.setAttribute('aria-label', 'เพิ่มตัวเลข ' + value + ' จากรูปที่ ' + (i + 1) + ' เข้าในรายการ');
+      btn.addEventListener('click', () => {
+        state.rows.push({ id: state.nextRowId++, value, checked: true, source: 'manual', imageIndex: null, edited: false, nearKey: key });
+        orderRows();
+        render();
+        toast('เพิ่มแถวแล้ว แก้ไขให้ครบ 10 หลักในรายการ');
+      });
+      li.append(text, len, badge, btn);
+      els.nearList.appendChild(li);
+    });
+  });
+  els.nearEmpty.hidden = total > 0;
+}
+
+function renderRaw() {
+  els.rawList.replaceChildren();
+  const done = state.images.map((img, i) => ({ img, i })).filter((x) => x.img.status === 'done');
+  if (done.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'ยังไม่มีข้อความดิบ';
+    els.rawList.appendChild(p);
+    return;
+  }
+  done.forEach(({ img, i }) => {
+    const d = document.createElement('details');
+    const s = document.createElement('summary');
+    s.textContent = 'รูปที่ ' + (i + 1) + ' · ' + img.file.name;
+    const pre = document.createElement('pre');
+    pre.textContent = img.rawText;
+    d.append(s, pre);
+    els.rawList.appendChild(d);
+  });
+}
+
+function updateSummary() {
+  const validAll = allValidValues().length;
+  const validSel = selectedValidValues().length;
+  const target = getTargetCount();
+  const x = detectedCount();
+  const anyResult = hasResult();
+  const pending = state.images.some((img) => img.status !== 'done');
+  const errCount = state.images.filter((img) => img.status === 'error').length;
+  const size = getGroupSize();
+
+  let counters = '';
+  if (anyResult) {
+    counters = 'ตรวจพบทั้งหมด ' + x + ' ชุด · ใช้งาน ' + validSel + ' ชุด';
+    if (size) counters += ' · แบ่งเป็น ' + groupValues(selectedValidValues(), size).length + ' กลุ่ม';
+  }
+  els.counters.textContent = counters;
+
+  const msgs = [];
+  if (anyResult && !pending && x === 0) {
+    msgs.push('ไม่พบชุดตัวเลข 10 หลักในรูปภาพ');
+  } else if (anyResult && !pending && target !== null && target !== Infinity && x < target) {
+    msgs.push('พบเพียง ' + x + ' ชุด น้อยกว่าที่กำหนด (' + target + ' ชุด) — ระบบจะไม่สร้างตัวเลขเพิ่มเอง');
+  }
+  if (errCount > 0) {
+    msgs.push('มี ' + errCount + ' รูปที่อ่านไม่สำเร็จ (ดูสถานะในรายการรูป) กดเริ่มอ่านข้อความอีกครั้งเพื่ออ่านรูปที่เหลือ');
+  }
+  const invalidCount = state.rows.filter((r) => !isRowValid(r)).length;
+  if (invalidCount > 0) {
+    msgs.push('มี ' + invalidCount + ' แถวที่ไม่ครบ 10 หลัก จะไม่ถูกรวมในการส่งออกหรือคัดลอก');
+  }
+  els.resultMsg.replaceChildren(...msgs.map((text) => {
+    const p = document.createElement('p');
+    p.textContent = text;
+    return p;
+  }));
+  els.resultMsg.hidden = msgs.length === 0;
+
+  els.copyAll.disabled = validAll === 0;
+  els.copySelected.disabled = validSel === 0;
+  els.copyWord.disabled = validSel === 0;
+  els.downloadDocx.disabled = validSel === 0;
+  els.selectToggle.disabled = state.rows.length === 0;
+  els.clearResults.disabled = state.rows.length === 0 && !anyResult;
+}
+
+function updateControls() {
+  const busy = state.running;
+  const hasPending = state.images.some((img) => img.status !== 'done');
+  els.runBtn.disabled = busy || !hasPending;
+  els.rerunAllBtn.disabled = busy || state.images.length === 0;
+  els.clearImagesBtn.disabled = busy || state.images.length === 0;
+  els.pickBtn.disabled = busy;
+}
+
+function render() {
+  renderImages();
+  renderRows();
+  renderNearMiss();
+  renderRaw();
+  els.empty.hidden = state.rows.length > 0;
+  updateGroupPreview();
+  updateSummary();
+  updateControls();
+}
+
+/* ---------- copy and export ---------- */
+
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch (e) {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {
+    // fall through to the legacy path
+  }
+  return legacyCopy(text);
+}
+
+async function copyPlain(values, opts) {
+  const ok = await copyText(buildPlainText(values, opts));
+  toast(ok ? 'คัดลอกแล้ว ' + values.length + ' ชุด' : 'คัดลอกไม่สำเร็จ');
+}
+
+async function copyForWord(values, opts) {
+  const plain = buildPlainText(values, opts);
+  if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+    const html = buildWordHtml(values, opts);
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([plain], { type: 'text/plain' })
+        })
+      ]);
+      toast('คัดลอกสำหรับ Word แล้ว ' + values.length + ' ชุด');
+      return;
+    } catch (e) {
+      // fall through to plain text
+    }
+  }
+  const ok = await copyText(plain);
+  toast(ok ? 'คัดลอกแล้ว ' + values.length + ' ชุด (ข้อความธรรมดา)' : 'คัดลอกไม่สำเร็จ');
+}
+
+async function downloadDocx(values, opts) {
+  if (typeof JSZip === 'undefined') {
+    toast('โหลดไลบรารี JSZip ไม่สำเร็จ ไม่สามารถสร้างไฟล์ Word ได้');
+    return;
+  }
+  try {
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', CONTENT_TYPES_XML);
+    zip.file('_rels/.rels', ROOT_RELS_XML);
+    zip.file('word/document.xml', buildDocumentXml(values, opts));
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: DOCX_MIME });
+    const filename = 'numbers-' + buildFileStamp(new Date()) + '.docx';
+    // Inside a claude.ai artifact, plain <a download> is blocked; use the downloads capability.
+    const downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+    if (downloads) {
+      try {
+        await downloads.save({ filename, data: blob });
+        toast('ดาวน์โหลดไฟล์ ' + values.length + ' ชุดแล้ว');
+      } catch (e) {
+        if (e && e.code !== 'declined') toast('ดาวน์โหลดไม่สำเร็จ (' + (e.code || 'error') + ')');
+      }
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('ดาวน์โหลดไฟล์ ' + values.length + ' ชุดแล้ว');
+  } catch (err) {
+    toast('สร้างไฟล์ Word ไม่สำเร็จ');
+  }
+}
+
+function bindResults() {
+  els.selectToggle.addEventListener('click', () => {
+    const allChecked = state.rows.length > 0 && state.rows.every((r) => r.checked);
+    state.rows.forEach((r) => {
+      r.checked = !allChecked;
+      markEdited(r);
+    });
+    render();
+  });
+  els.copySelected.addEventListener('click', () => copyPlain(selectedValidValues(), groupOpts()));
+  els.copyAll.addEventListener('click', () => copyPlain(allValidValues()));
+  els.copyWord.addEventListener('click', () => copyForWord(selectedValidValues(), groupOpts()));
+  els.downloadDocx.addEventListener('click', () => downloadDocx(selectedValidValues(), groupOpts()));
+  els.addRow.addEventListener('click', () => {
+    const id = state.nextRowId++;
+    state.rows.push({ id, value: '', checked: true, source: 'manual', imageIndex: null, edited: false, nearKey: null });
+    render();
+    const input = document.getElementById('val-' + id);
+    if (input) input.focus();
+  });
+  els.clearResults.addEventListener('click', clearResults);
+}
+
+/* ---------- init ---------- */
+
+function bindSettings() {
+  document.querySelectorAll('input[name="qty"]').forEach((r) => {
+    r.addEventListener('change', onQuantityChange);
+  });
+  els.customQty.addEventListener('input', () => {
+    applySelection();
+    render();
+  });
+  els.fixCheck.addEventListener('change', onFixConfusionsChange);
+  document.querySelectorAll('input[name="group"]').forEach((r) => {
+    r.addEventListener('change', onGroupSettingsChange);
+  });
+  els.groupCustom.addEventListener('input', onGroupSettingsChange);
+  els.groupLabel.addEventListener('input', onGroupSettingsChange);
+  els.runBtn.addEventListener('click', runOcr);
+  els.rerunAllBtn.addEventListener('click', rerunAll);
+}
+
+function init() {
+  bindUpload();
+  bindSettings();
+  bindResults();
+  render();
+}
+
+init();
+</script>
+</body>
+</html>
