@@ -494,6 +494,7 @@
       </fieldset>
 
       <button type="button" id="run-btn" class="btn btn-primary" disabled>เริ่มอ่านข้อความ</button>
+      <button type="button" id="stop-ocr" class="btn" hidden>หยุด</button>
       <button type="button" id="rerun-all-btn" class="btn btn-block" disabled>อ่านใหม่ทั้งหมด</button>
 
       <progress id="progress" max="1" value="0" hidden aria-label="ความคืบหน้าการอ่านข้อความ"></progress>
@@ -1152,6 +1153,15 @@ function buildImageResult(passes, fixConfusions, order) {
   }
   return { exact, alts, lowConf, near, nearSingle };
 }
+
+// Rejects with Error(message) if the promise does not settle within ms. The deadline timer is cleared once it settles.
+function withTimeout(promise, ms, message) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
 /* @pure-end */
 
 /* ---------- DOM and state ---------- */
@@ -1184,6 +1194,7 @@ const els = {
   groupLabel: $('#group-label'),
   groupPreview: $('#group-preview'),
   runBtn: $('#run-btn'),
+  stopBtn: $('#stop-ocr'),
   rerunAllBtn: $('#rerun-all-btn'),
   progress: $('#progress'),
   progressText: $('#progress-text'),
@@ -1216,6 +1227,10 @@ const state = {
   ocrDirty: false,     // true when OCR rows were edited, deleted, or checkbox-toggled by hand
   nextRowId: 1,
   nextImageId: 1,
+  // Token of the run in progress; bumped on every run start, stop and end, so older results are dropped.
+  runId: 0,
+  // Set by the stop button; the run in progress then ends silently.
+  cancelRequested: false,
   running: false
 };
 
@@ -1676,6 +1691,18 @@ const REC_STD = [0.5, 0.5, 0.5];
 const UNCLIP_RATIO = 1.5;
 const MODEL_LOAD_ERROR = 'โหลดโมเดล OCR ไม่สำเร็จ กรุณารีเฟรชหน้าแล้วลองใหม่ (ต้องเปิดผ่านเว็บไซต์ ไม่ใช่เปิดไฟล์จากเครื่องโดยตรง)';
 const MODEL_LOADING_TEXT = 'กำลังโหลดโมเดล OCR (ครั้งแรกประมาณ 27 MB)';
+// Deadlines: a load or an image that takes longer counts as failed, so a run cannot hang.
+const ENGINE_TIMEOUT_MS = 180000;
+const ENGINE_TIMEOUT_TEXT = 'โหลดโมเดล OCR นานเกินไป กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+const IMAGE_TIMEOUT_MS = 120000;
+const IMAGE_TIMEOUT_TEXT = 'อ่านรูปนี้นานเกินไป';
+// Thrown inside the OCR steps when their run was stopped; startReading treats it as a silent stop.
+class CancelledError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'CancelledError';
+  }
+}
 // Yields one task so the progress update can paint between heavy inference runs.
 // Not requestAnimationFrame: it never fires in a hidden tab, which would stall reading.
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
@@ -1683,10 +1710,11 @@ const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 let enginePromise = null;
 
 // Loads both sessions and the keys once. A failed load is not kept, so the next run tries again.
-// If any part fails, the sessions that did load are released before the error is rethrown.
+// A load that runs past ENGINE_TIMEOUT_MS counts as failed. If any part fails, the sessions that did load are
+// released before the error is rethrown.
 function getEngine() {
   if (!enginePromise) {
-    enginePromise = (async () => {
+    const loadP = (async () => {
       const base = new URL(PADDLE_DIR, location.href).href;
       ort.env.wasm.wasmPaths = base;
       ort.env.wasm.numThreads = 1;
@@ -1708,8 +1736,14 @@ function getEngine() {
         }
         throw err;
       }
-    })().catch((err) => {
+    })();
+    enginePromise = withTimeout(loadP, ENGINE_TIMEOUT_MS, ENGINE_TIMEOUT_TEXT).catch((err) => {
       enginePromise = null;
+      // A load that finishes after the deadline is released, so its sessions are not leaked.
+      loadP.then((eng) => {
+        eng.det.release?.();
+        eng.rec.release?.();
+      }, () => {});
       throw err;
     });
   }
@@ -1799,19 +1833,31 @@ async function recognizeBox(m, src, b) {
 // Reads one image. Returns [{text, score, charScores, box: {x0, y0, x1, y1}}] in a rough reading order.
 // hooks.onDetect() runs before detection; hooks.onRecognize(k, m) runs before each of the m boxes (k from 1);
 // hooks.onRecognized(m) runs after the last box. Each progress update is painted (nextFrame) before the next run.
+// hooks.isCancelled() is checked after every await and before every hook; when it returns true, CancelledError is thrown.
 async function paddleRead(source, hooks) {
   const h = hooks || {};
+  const check = () => {
+    if (h.isCancelled && h.isCancelled()) throw new CancelledError();
+  };
+  check();
   const m = await getEngine();
+  check();
   if (h.onDetect) h.onDetect();
   await nextFrame();
+  check();
   const boxes = await detectBoxes(m, source);
+  check();
   const items = [];
   for (let k = 0; k < boxes.length; k++) {
+    check();
     if (h.onRecognize) h.onRecognize(k + 1, boxes.length);
     await nextFrame();
+    check();
     const r = await recognizeBox(m, source, boxes[k]);
+    check();
     if (r.text) items.push({ text: r.text, score: r.score, charScores: r.charScores, box: boxes[k] });
   }
+  check();
   if (h.onRecognized && boxes.length) h.onRecognized(boxes.length);
   items.sort((a, b) => {
     const ha = a.box.y1 - a.box.y0, hb = b.box.y1 - b.box.y0;
@@ -1822,11 +1868,15 @@ async function paddleRead(source, hooks) {
 }
 
 // Reads one image in a single PaddleOCR pass. The source is loaded once and released afterwards.
-async function readImagePasses(file, pos, total) {
+// isCancelled() is checked along the way; a true result ends the read with CancelledError.
+async function readImagePasses(file, pos, total, isCancelled) {
+  const cancelled = isCancelled || (() => false);
   const source = await loadSource(file);
   try {
+    if (cancelled()) throw new CancelledError();
     const head = 'รูปที่ ' + pos + '/' + total;
     const items = await paddleRead(source, {
+      isCancelled: cancelled,
       onDetect: () => showProgress(head + ' · กำลังหาตำแหน่งข้อความ', 0),
       // Box k is about to be read, so k - 1 boxes are done.
       onRecognize: (k, n) => showProgress(head + ' · กำลังอ่านข้อความ ' + k + '/' + n, (k - 1) / n),
@@ -1839,7 +1889,12 @@ async function readImagePasses(file, pos, total) {
 }
 
 // Reads each target image in order. A failed image is marked and skipped; a failed model load stops the run.
+// Every run takes a token (state.runId). A stop or a newer run changes the token, so late results of this run are
+// dropped and its finally leaves the newer state alone.
 async function startReading(targets) {
+  const runId = ++state.runId;
+  state.cancelRequested = false;
+  const stale = () => runId !== state.runId || state.cancelRequested;
   state.running = true;
   setAlert('', '');
   updateControls();
@@ -1849,33 +1904,72 @@ async function startReading(targets) {
     try {
       await getEngine();
     } catch (err) {
-      setAlert('error', MODEL_LOAD_ERROR);
+      if (stale()) return;
+      setAlert('error', err.message === ENGINE_TIMEOUT_TEXT ? ENGINE_TIMEOUT_TEXT : MODEL_LOAD_ERROR);
       return;
     }
     for (const img of targets) {
+      if (stale()) return;
       const pos = state.images.indexOf(img) + 1;
       if (pos === 0) continue;
       img.status = 'reading';
       img.error = '';
       render();
       showProgress('รูปที่ ' + pos + '/' + state.images.length + ' · กำลังหาตำแหน่งข้อความ', 0);
+      // job.cancelled stops this image's in-flight work once its deadline has passed.
+      const job = { cancelled: false };
       try {
-        img.passes = await readImagePasses(img.file, pos, state.images.length);
+        const passes = await withTimeout(
+          readImagePasses(img.file, pos, state.images.length, () => job.cancelled || stale()),
+          IMAGE_TIMEOUT_MS,
+          IMAGE_TIMEOUT_TEXT
+        );
+        if (stale()) return;
+        img.passes = passes;
         finishImage(img);
         okCount++;
       } catch (err) {
+        if (stale() || err instanceof CancelledError) return;
+        job.cancelled = true;
         img.status = 'error';
         img.error = describeError(err);
       }
       render();
     }
+    if (stale()) return;
+    const total = targets.length;
+    setAlert(okCount === total ? 'success' : 'warning', 'อ่านสำเร็จ ' + okCount + '/' + total + ' รูป');
   } finally {
-    state.running = false;
-    hideProgress();
-    render();
+    if (runId === state.runId) endRunForUi();
   }
-  const total = targets.length;
-  setAlert(okCount === total ? 'success' : 'warning', 'อ่านสำเร็จ ' + okCount + '/' + total + ' รูป');
+}
+
+// Ends the run for the UI: controls come back and the progress bar goes. Bumping the token makes any result still in
+// flight from the ended run be ignored.
+function endRunForUi() {
+  state.runId++;
+  state.running = false;
+  hideProgress();
+  render();
+}
+
+// Stop button. The UI goes idle at once; the OCR call already in flight may still finish in the background, but its
+// result is dropped. Images already finished keep their results.
+function stopReading() {
+  if (!state.running) return;
+  state.cancelRequested = true;
+  state.images.forEach((img) => { if (img.status === 'reading') img.status = 'wait'; });
+  endRunForUi();
+  setAlert('info', 'หยุดการอ่านแล้ว');
+}
+
+// Safety net for errors nobody handled. Only while a run is active: the error is logged, the run is ended so the
+// controls come back, and one alert says so. A CancelledError belongs to a stop and is not reported.
+function onUnexpectedError(kind, err) {
+  if (!state.running || err instanceof CancelledError) return;
+  console.error('[OCR] ' + kind + ':', err);
+  endRunForUi();
+  setAlert('warning', 'เกิดข้อผิดพลาดระหว่างอ่านข้อความ ดูรายละเอียดในคอนโซล');
 }
 
 // Reads only images that are not done yet (keeps edits on finished images).
@@ -2339,6 +2433,9 @@ function updateControls() {
   els.rerunAllBtn.disabled = busy || state.images.length === 0;
   els.clearImagesBtn.disabled = busy || state.images.length === 0;
   els.pickBtn.disabled = busy;
+  // Stop is shown and enabled only while a run is active.
+  els.stopBtn.hidden = !busy;
+  els.stopBtn.disabled = !busy;
 }
 
 function render() {
@@ -2492,6 +2589,7 @@ function bindSettings() {
   els.groupCustom.addEventListener('input', onGroupSettingsChange);
   els.groupLabel.addEventListener('input', onGroupSettingsChange);
   els.runBtn.addEventListener('click', runOcr);
+  els.stopBtn.addEventListener('click', stopReading);
   els.rerunAllBtn.addEventListener('click', rerunAll);
 }
 
@@ -2499,6 +2597,9 @@ function init() {
   bindUpload();
   bindSettings();
   bindResults();
+  // Safety net: an error nobody handled must not leave the controls locked.
+  window.addEventListener('unhandledrejection', (e) => onUnexpectedError('unhandledrejection', e.reason));
+  window.addEventListener('error', (e) => onUnexpectedError('error', e.error || e.message));
   render();
 }
 
