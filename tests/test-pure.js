@@ -6,7 +6,8 @@ const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..');
 const HTML = path.join(ROOT, 'index.html');
-const src = fs.readFileSync(HTML, 'utf8');
+// Normalize CRLF so the source guards pass on Windows checkouts with core.autocrlf.
+const src = fs.readFileSync(HTML, 'utf8').replace(/\r\n/g, '\n');
 const m = src.match(/\/\* @pure-start \*\/([\s\S]*?)\/\* @pure-end \*\//);
 if (!m) throw new Error('pure markers not found in index.html');
 
