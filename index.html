@@ -851,6 +851,7 @@ function buildFileStamp(d) {
 }
 
 // Merges OCR candidates from several passes into one list in final reading order.
+// Each entry also carries inBase: true when the group has an item from pass 0 (the base pass).
 // passes: array of arrays of {v, x, y, lh}, each pass in its own reading order.
 // Returns [{value, conflict, alternatives, votes, support}]: votes = passes whose value is the winner,
 // support = distinct passes in the group.
@@ -949,13 +950,14 @@ function mergePasses(passes) {
     return {
       value, conflict: alternatives.length > 0, alternatives,
       votes: best.count, support: g.passes.size,
-      y: g.y, x: g.x, lh: g.lh, w: g.w, minScore: g.minScore, key: g.key, order: g.order
+      y: g.y, x: g.x, lh: g.lh, w: g.w, minScore: g.minScore, key: g.key, order: g.order,
+      inBase: g.passes.has(0)
     };
   });
 
   merged.sort((a, b) => (a.key - b.key) || (a.order - b.order));
-  return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }) =>
-    ({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore }));
+  return merged.map(({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore, inBase }) =>
+    ({ value, conflict, alternatives, votes, support, y, x, lh, w, minScore, inBase }));
 }
 
 // Like withTimeout, but the deadline is an inactivity limit. work(touch) runs; each touch() re-arms the deadline,
@@ -1109,6 +1111,53 @@ function recInputWidth(bw, bh) {
   return Math.max(16, Math.min(1600, Math.ceil((REC_HEIGHT * bw) / bh)));
 }
 
+// Every detected box is read once per variant, and each variant is one pass for the voting in buildImageResult.
+// 'base' is the detected box, 'pad' the box grown by REC_PAD, 'contrast' the base crop with stretchContrast.
+const REC_VARIANTS = ['base', 'pad', 'contrast'];
+// Margin for the 'pad' variant: this fraction of the box height on every side.
+const REC_PAD = 0.15;
+
+// The box grown by pad * (its height) on top, bottom, left and right, clamped to [0, W0] x [0, H0]. Returns a new box.
+function padBox(b, W0, H0, pad) {
+  const d = pad * (b.y1 - b.y0);
+  return {
+    x0: Math.max(0, b.x0 - d),
+    y0: Math.max(0, b.y0 - d),
+    x1: Math.min(W0, b.x1 + d),
+    y1: Math.min(H0, b.y1 + d)
+  };
+}
+
+// RGBA pixels (Uint8ClampedArray), in place: gray = 0.299R + 0.587G + 0.114B, then a linear stretch from the
+// 2nd to the 98th percentile of gray up to 0..255. Alpha is untouched. If the two percentiles are equal, only the
+// grayscale is written. Returns the same array.
+function stretchContrast(rgba) {
+  const n = rgba.length / 4;
+  const hist = new Array(256).fill(0);
+  const gray = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const g = 0.299 * rgba[4 * i] + 0.587 * rgba[4 * i + 1] + 0.114 * rgba[4 * i + 2];
+    gray[i] = g;
+    hist[Math.round(g)]++;
+  }
+  const percentile = (p) => {
+    const target = p * n;
+    let cum = 0;
+    for (let v = 0; v < 256; v++) {
+      cum += hist[v];
+      if (cum >= target) return v;
+    }
+    return 255;
+  };
+  const lo = percentile(0.02), hi = percentile(0.98);
+  const stretch = hi > lo;
+  for (let i = 0; i < n; i++) {
+    const v = stretch ? (gray[i] - lo) * 255 / (hi - lo) : gray[i];
+    rgba[4 * i] = rgba[4 * i + 1] = rgba[4 * i + 2] = v;
+  }
+  return rgba;
+}
+
 // PaddleOCR results [{text, score, charScores, box: {x0, y0, x1, y1}}] -> the pass shape the rest of the app reads.
 // The whole box is the single word of its line. charScores (per character of text) go on the line and its word.
 // Empty texts are skipped.
@@ -1217,10 +1266,13 @@ function isLowConfidence(m) {
 // Agreement rule, per merged candidate:
 //   votes >= 2                      -> accepted (flagged when other values were seen)
 //   votes 1 and support >= 2        -> accepted and flagged (its alternatives are the other values)
-//   support 1 (one pass saw it)     -> not accepted; goes to near, unless the image has a single pass
+//   support 1, from the base pass   -> accepted and flagged low-confidence (only the base pass read it)
+//   support 1, from another pass    -> not accepted; goes to near (as single)
+// A single pass (one variant only) accepts every value; its flag comes from the source score alone.
 // Returns the accepted values, the alternatives per value, lowConf per value (source score below
-// LOW_CONFIDENCE_SCORE; such a value has no alternatives), the near misses (base-pass runs and
-// single-pass values), and nearSingle: the near values that came from the agreement rule.
+// LOW_CONFIDENCE_SCORE, or a base-only value; a value with no disagreement and low confidence has no
+// alternatives, but a disagreement always keeps its alternatives), the near misses (base-pass runs and
+// values seen by a non-base pass only), and nearSingle: the near values that came from the agreement rule.
 function buildImageResult(passes, fixConfusions, order) {
   const list = Array.isArray(passes) ? passes : [];
   if (list.length === 0) return { exact: [], alts: [], lowConf: [], near: [], nearSingle: [] };
@@ -1229,13 +1281,15 @@ function buildImageResult(passes, fixConfusions, order) {
   const accepted = [];
   const singles = [];
   for (const m of merged) {
-    if (m.votes >= 2 || m.support >= 2 || singlePassAllowed) accepted.push(m);
+    if (m.votes >= 2 || m.support >= 2 || m.inBase || singlePassAllowed) accepted.push(m);
     else singles.push(m.value);
   }
   const ordered = order === 'columns' ? sortByColumns(accepted) : sortByRows(accepted);
   const exact = ordered.map((m) => m.value);
-  const lowConf = ordered.map((m) => isLowConfidence(m));
-  const alts = ordered.map((m, k) => (lowConf[k] ? [] : m.alternatives));
+  // Base-only values (support 1 with several passes) are never trusted on their own: flagged for review.
+  const lowConf = ordered.map((m) => (!singlePassAllowed && m.support === 1) || isLowConfidence(m));
+  // A variant disagreement always shows its alternatives, even when the score is low.
+  const alts = ordered.map((m, k) => (lowConf[k] && !m.conflict ? [] : m.alternatives));
 
   const baseNear = [];
   for (const line of list[0].lines) {
@@ -1330,7 +1384,7 @@ const els = {
 const state = {
   // {id, file, url, status: 'wait' | 'reading' | 'done' | 'error', error, rawText, exact: [], near: [],
   //  passes: [{scale, text, lines}] (base first), alts: [[alternative values per exact value]],
-  //  nearSingle: [near values that came from the single-pass rule, shown with a note]}
+  //  nearSingle: [near values that came from the agreement rule (seen by a non-base pass only), shown with a note]}
   images: [],
   // {id, value, checked, source: 'ocr' | 'manual', imageIndex, edited, nearKey, conflict, alternatives}
   rows: [],
@@ -2007,8 +2061,11 @@ async function detectBoxes(m, src) {
 }
 
 // Recognizer: one box, cut from the source, scaled to height 48. Returns {text, score, charScores}.
-async function recognizeBox(m, src, b) {
-  const bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+// variant is one of REC_VARIANTS: 'pad' crops the padded box; 'contrast' stretches the contrast of the crop;
+// anything else (including 'base') crops the detected box as it is.
+async function recognizeBox(m, src, b, variant) {
+  const box = variant === 'pad' ? padBox(b, srcWidth(src), srcHeight(src), REC_PAD) : b;
+  const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
   const W = recInputWidth(bw, bh);
   const c = document.createElement('canvas');
   let input;
@@ -2017,7 +2074,12 @@ async function recognizeBox(m, src, b) {
     c.height = REC_HEIGHT;
     const g = c.getContext('2d', { willReadFrequently: true });
     g.imageSmoothingQuality = 'high';
-    g.drawImage(src, b.x0, b.y0, bw, bh, 0, 0, W, REC_HEIGHT);
+    g.drawImage(src, box.x0, box.y0, bw, bh, 0, 0, W, REC_HEIGHT);
+    if (variant === 'contrast') {
+      const px = g.getImageData(0, 0, W, REC_HEIGHT);
+      stretchContrast(px.data);
+      g.putImageData(px, 0, 0);
+    }
     input = tensorFrom(c, REC_MEAN, REC_STD);
   } finally {
     // The tensor holds its own copy of the pixels, so the canvas memory can go now.
@@ -2029,10 +2091,12 @@ async function recognizeBox(m, src, b) {
   return ctcDecode(out.data, T, C, m.keys);
 }
 
-// Reads one image. Returns [{text, score, charScores, box: {x0, y0, x1, y1}}] in a rough reading order.
+// Reads one image. Every detected box is read once per entry of REC_VARIANTS. Returns one item list per variant,
+// base first, each in a rough reading order: [[{text, score, charScores, box: {x0, y0, x1, y1}}], ...].
+// Every item carries the ORIGINAL detected box for every variant, so the passes line up in mergePasses.
 // hooks.onDetect() runs before detection; hooks.onRecognize(k, m) runs before each of the m boxes (k from 1);
 // hooks.onRecognized(m) runs after the last box. Each progress update is painted (nextFrame) before the next run.
-// hooks.onProgress() runs after detection and after each box finishes; the caller re-arms its inactivity deadline there.
+// hooks.onProgress() runs after detection and after each recognizer run; the caller re-arms its inactivity deadline there.
 // hooks.isCancelled() is checked after every await and before every hook; when it returns true, CancelledError is thrown.
 async function paddleRead(source, hooks) {
   const h = hooks || {};
@@ -2048,30 +2112,33 @@ async function paddleRead(source, hooks) {
   const boxes = await detectBoxes(m, source);
   check();
   if (h.onProgress) h.onProgress();
-  const items = [];
+  const lists = REC_VARIANTS.map(() => []);
   for (let k = 0; k < boxes.length; k++) {
     check();
     if (h.onRecognize) h.onRecognize(k + 1, boxes.length);
-    await nextFrame();
-    check();
-    const r = await recognizeBox(m, source, boxes[k]);
-    check();
-    if (r.text) items.push({ text: r.text, score: r.score, charScores: r.charScores, box: boxes[k] });
-    if (h.onProgress) h.onProgress();
+    for (let v = 0; v < REC_VARIANTS.length; v++) {
+      await nextFrame();
+      check();
+      const r = await recognizeBox(m, source, boxes[k], REC_VARIANTS[v]);
+      check();
+      if (r.text) lists[v].push({ text: r.text, score: r.score, charScores: r.charScores, box: boxes[k] });
+      if (h.onProgress) h.onProgress();
+    }
   }
   check();
   if (h.onRecognized && boxes.length) h.onRecognized(boxes.length);
-  items.sort((a, b) => {
+  const readingOrder = (a, b) => {
     const ha = a.box.y1 - a.box.y0, hb = b.box.y1 - b.box.y0;
     const ca = (a.box.y0 + a.box.y1) / 2, cb = (b.box.y0 + b.box.y1) / 2;
     return Math.abs(ca - cb) < Math.min(ha, hb) * 0.5 ? a.box.x0 - b.box.x0 : ca - cb;
-  });
-  return items;
+  };
+  return lists.map((items) => items.sort(readingOrder));
 }
 
-// Reads one image in a single PaddleOCR pass. The source is loaded once and released afterwards.
+// Reads one image as one pass per REC_VARIANTS entry (base first); the voting in buildImageResult decides.
+// The source is loaded once and released afterwards.
 // isCancelled() is checked along the way; a true result ends the read with CancelledError.
-// onProgress() is called after detection and after each box, so the caller can re-arm its deadline.
+// onProgress() is called after detection and after each recognizer run, so the caller can re-arm its deadline.
 async function readImagePasses(file, pos, total, isCancelled, onProgress) {
   const cancelled = isCancelled || (() => false);
   const progress = onProgress || (() => {});
@@ -2079,7 +2146,7 @@ async function readImagePasses(file, pos, total, isCancelled, onProgress) {
   try {
     if (cancelled()) throw new CancelledError();
     const head = 'รูปที่ ' + pos + '/' + total;
-    const items = await paddleRead(source, {
+    const lists = await paddleRead(source, {
       isCancelled: cancelled,
       onProgress: progress,
       onDetect: () => showProgress(head + ' · กำลังหาตำแหน่งข้อความ', 0),
@@ -2087,7 +2154,7 @@ async function readImagePasses(file, pos, total, isCancelled, onProgress) {
       onRecognize: (k, n) => showProgress(head + ' · กำลังอ่านข้อความ ' + k + '/' + n, (k - 1) / n),
       onRecognized: (n) => showProgress(head + ' · กำลังอ่านข้อความ ' + n + '/' + n, 1)
     });
-    return [passFromPaddle(items)];
+    return lists.map(passFromPaddle);
   } finally {
     if (typeof source.close === 'function') source.close();
   }

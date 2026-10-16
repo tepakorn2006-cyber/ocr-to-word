@@ -17,7 +17,8 @@ const NAMES = [
   'sortByRows', 'sortByColumns', 'ctcDecode', 'detectComponents', 'recInputWidth', 'buildRecKeys',
   'passFromPaddle', 'withTimeout', 'sniffImageType',
   'cleanSetInput', 'applySelectionToNewRows', 'withInactivityTimeout',
-  'isTextEntryTarget', 'toastDurationMs', 'cleanSetEdit'
+  'isTextEntryTarget', 'toastDurationMs', 'cleanSetEdit',
+  'padBox', 'stretchContrast', 'REC_PAD', 'REC_VARIANTS'
 ];
 // setTimeout/clearTimeout are passed in so withTimeout can use them; clearTimeout is wrapped to count cleared timers.
 const timerCleared = [];
@@ -27,12 +28,12 @@ const ctx = {
 };
 vm.createContext(ctx);
 // typeof guard: a missing function is reported by its test instead of aborting the whole suite.
-vm.runInContext(m[1] + '\n;' + NAMES.map((n) => `this.${n} = typeof ${n} === 'function' ? ${n} : undefined;`).join('\n'), ctx);
+vm.runInContext(m[1] + '\n;' + NAMES.map((n) => `this.${n} = typeof ${n} !== 'undefined' ? ${n} : undefined;`).join('\n'), ctx);
 const {
   extractNumbers, buildDocumentXml, applyOcrSelection, groupValues, formatGroupLabel, buildPlainText,
   buildWordHtml, mergePasses, collectCandidates, buildImageResult, sortByRows, sortByColumns,
   ctcDecode, detectComponents, recInputWidth, buildRecKeys, passFromPaddle, sniffImageType,
-  cleanSetInput, applySelectionToNewRows
+  cleanSetInput, applySelectionToNewRows, padBox, stretchContrast, REC_PAD, REC_VARIANTS
 } = ctx;
 
 let failed = 0, passed = 0;
@@ -556,17 +557,30 @@ eq('agreement: 1-of-5 with support 3 carries its alternatives',
   agr(P(pl(A, 10, 0)), P(pl(B, 10, 0)), P(pl(D, 10, 0)), P(), P()).alts, [[B, D]]);
 eq('agreement: 1-of-5 with support 2 is accepted and flagged',
   agr(P(pl(A, 10, 0)), P(pl(B, 10, 0)), P(), P(), P()).alts, [[B]]);
-eq('agreement: support 1 of 5 passes is not exact', agr(P(pl(A, 10, 0)), P(), P(), P(), P()).exact, []);
-eq('agreement: support 1 of 5 passes goes to near', agr(P(pl(A, 10, 0)), P(), P(), P(), P()).near, [A]);
-eq('agreement: support 1 of 5 passes is marked single', agr(P(pl(A, 10, 0)), P(), P(), P(), P()).nearSingle, [A]);
+// Support 1 from a non-base pass (pass 1 alone) is not exact: it goes to near as single.
+eq('agreement: non-base support 1 of 5 passes is not exact', agr(P(), P(pl(A, 10, 0)), P(), P(), P()).exact, []);
+eq('agreement: non-base support 1 of 5 passes goes to near', agr(P(), P(pl(A, 10, 0)), P(), P(), P()).near, [A]);
+eq('agreement: non-base support 1 of 5 passes is marked single', agr(P(), P(pl(A, 10, 0)), P(), P(), P()).nearSingle, [A]);
+// Support 1 from the base pass alone is accepted and flagged low-confidence, whatever its score.
+eq('agreement: base-only value (support 1) is accepted', agr(P(pl(A, 10, 0, 0.95)), P(), P(), P(), P()).exact, [A]);
+eq('agreement: base-only value (support 1) is flagged low-confidence', agr(P(pl(A, 10, 0, 0.95)), P(), P(), P(), P()).lowConf, [true]);
+eq('agreement: base-only value (support 1) is not in near', agr(P(pl(A, 10, 0, 0.95)), P(), P(), P(), P()).near, []);
+eq('agreement: base-only value with 3 passes is flagged (3-pass read)', agr(P(pl(A, 10, 0, 0.95)), P(), P()).lowConf, [true]);
+// Flag rule for a base-only value: alts stay empty (no other pass saw a different value).
+eq('agreement: base-only value has no alternatives', agr(P(pl(A, 10, 0, 0.95)), P(), P()).alts, [[]]);
 eq('agreement: support 1 with one total pass is accepted', agr(P(pl(A, 10, 0))).exact, [A]);
 eq('agreement: one total pass -> no near entry from it', agr(P(pl(A, 10, 0))).near, []);
 eq('agreement: near value equal to an accepted value is not listed',
   agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(pl(A, 10, 0)), P(pl(A, 10, 0)), P(), P()).near, []);
-eq('agreement: near value equal to an accepted value: exact keeps it once',
-  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(pl(A, 10, 0)), P(pl(A, 10, 0)), P(), P()).exact, [A]);
-eq('agreement: same single value at two places -> near once',
-  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(), P(), P(), P()).near, [A]);
+// The second copy of A is seen by the base pass only, so it is accepted (and flagged) like any base-only value.
+eq('agreement: base-only second copy of an accepted value is accepted and flagged',
+  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(pl(A, 10, 0)), P(pl(A, 10, 0)), P(), P()).lowConf, [false, true]);
+eq('agreement: base-only values at two places are both accepted',
+  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(), P(), P(), P()).exact, [A, A]);
+eq('agreement: base-only values at two places are both flagged',
+  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(), P(), P(), P()).lowConf, [true, true]);
+eq('agreement: base-only values are never in nearSingle',
+  agr(P(pl(A, 10, 0), pl(A, 10, 200)), P(), P(), P(), P()).nearSingle, []);
 eq('agreement: base-pass 9-digit near stays in near, not marked single',
   agr(P(pl('123456789', 10, 0)), P(), P(), P(), P()).nearSingle, []);
 eq('agreement: base-pass 9-digit near still listed',
@@ -832,6 +846,65 @@ eq('progress: detection text', src.includes('กำลังหาตำแห�
 eq('progress: recognition text', src.includes('กำลังอ่านข้อความ'), true);
 eq('badge: low-confidence tooltip', src.includes('ความมั่นใจต่ำ ควรตรวจสอบ'), true);
 eq('CSS: .badge-conflict uses amber tokens', /\.badge\.badge-conflict\s*\{[^}]*var\(--conflict/.test(src), true);
+
+// --- triple read (pure): padBox, stretchContrast, REC_PAD, REC_VARIANTS ---
+eq('triple read: REC_PAD is 0.15', REC_PAD, 0.15);
+eq('triple read: REC_VARIANTS are base, pad, contrast in order', REC_VARIANTS, ['base', 'pad', 'contrast']);
+tryEq('padBox: grows by pad * height on top, bottom, left and right',
+  () => padBox({ x0: 100, y0: 50, x1: 200, y1: 90 }, 1000, 1000, 0.25),
+  { x0: 90, y0: 40, x1: 210, y1: 100 });
+tryEq('padBox: clamps to the source image on every side',
+  () => padBox({ x0: 2, y0: 0, x1: 50, y1: 10 }, 40, 30, 1),
+  { x0: 0, y0: 0, x1: 40, y1: 20 });
+tryEq('padBox: returns a new box and leaves the input alone',
+  () => { const b = { x0: 1, y0: 1, x1: 9, y1: 9 }; const r = padBox(b, 100, 100, 0.5); return [r !== b, b.x0, b.y1]; },
+  [true, 1, 9]);
+// Grayscale of an RGBA list; stretchContrast works in place on a Uint8ClampedArray.
+const rgbaOf = (pixels) => Uint8ClampedArray.from(pixels.flat());
+tryEq('stretchContrast: 2nd..98th percentile stretched to 0..255, values clamped, alpha kept',
+  () => Array.from(stretchContrast(rgbaOf([[50, 50, 50, 255], [100, 100, 100, 255], [200, 200, 200, 77], [250, 250, 250, 9]]))),
+  [0, 0, 0, 255, 64, 64, 64, 255, 191, 191, 191, 77, 255, 255, 255, 9]);
+tryEq('stretchContrast: writes gray 0.299R+0.587G+0.114B into R, G, B',
+  () => Array.from(stretchContrast(rgbaOf([[10, 20, 30, 200]]))),
+  [18, 18, 18, 200]);
+tryEq('stretchContrast: returns the same array it was given (in place)',
+  () => { const a = rgbaOf([[1, 2, 3, 4], [5, 6, 7, 8]]); return stretchContrast(a) === a; },
+  true);
+
+// Three reads at one box: the 5 is read as 6 by one variant. The vote keeps 5 and flags 6 as its alternative.
+const X5 = '0851234567', Y6 = '0861234567';
+tryEq('triple read: 5 in two variants and 6 in one -> exact 5 flagged with 6 as alternative',
+  () => {
+    const r = buildImageResult([P(pl(X5, 10, 0)), P(pl(Y6, 10, 0)), P(pl(X5, 10, 0))], true);
+    return [r.exact, r.alts];
+  },
+  [[X5], [[Y6]]]);
+// A variant disagreement keeps its alternative even when the source score is low (the 0.7 read of 6 is the flag reason).
+tryEq('triple read: conflict keeps its alternative when the score is low',
+  () => {
+    const r = buildImageResult([P(pl(X5, 10, 0, 0.95)), P(pl(Y6, 10, 0, 0.7)), P(pl(X5, 10, 0, 0.95))], true);
+    return [r.exact, r.lowConf, r.alts];
+  },
+  [[X5], [true], [[Y6]]]);
+// mergePasses exposes inBase: the group has an item from pass 0 (the base pass).
+tryEq('mergePasses: inBase is true only for groups with an item from the base pass',
+  () => mergePasses([[cand(A, 10, 10)], [cand(B, 10, 500)]]).map((r) => [r.value, r.inBase]),
+  [[A, true], [B, false]]);
+
+// Source guards: the three variants are wired through recognizeBox, paddleRead and readImagePasses.
+eq('triple read: recognizeBox takes the variant as its fourth argument', /async function recognizeBox\(m, src, b, variant\)/.test(src), true);
+eq('triple read: recognizeBox crops the padded box for the pad variant',
+  recBody.includes("variant === 'pad'") && recBody.includes('padBox(b, srcWidth(src), srcHeight(src), REC_PAD)'), true);
+eq('triple read: recognizeBox applies stretchContrast to the contrast variant',
+  recBody.includes("variant === 'contrast'") && recBody.includes('stretchContrast(') &&
+  recBody.includes('getImageData(') && recBody.includes('putImageData('), true);
+eq('triple read: paddleRead runs every variant for each box',
+  paddleBody.includes('recognizeBox(m, source, boxes[k], REC_VARIANTS[v])') && paddleBody.includes('REC_VARIANTS.length'), true);
+eq('triple read: paddleRead yields to the page before every variant run (not only once per box)',
+  /for \(let v = 0[\s\S]*?await nextFrame\(\);[\s\S]*?recognizeBox\(m, source, boxes\[k\], REC_VARIANTS\[v\]\)/.test(paddleBody), true);
+eq('triple read: readImagePasses returns one pass per variant, base first',
+  readBody.includes('return lists.map(passFromPaddle);'), true);
+eq('triple read: the old single-pass return is gone', readBody.includes('return [passFromPaddle(items)]'), false);
 
 // --- near-miss UI (source guards) ---
 eq('near summary renamed',

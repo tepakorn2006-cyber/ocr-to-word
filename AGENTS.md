@@ -23,6 +23,7 @@ Single-page web app for Thai, non-technical users. Upload photos (mostly phone p
 ## Gotchas (each one cost a real bug)
 
 - **OCR engine.** PaddleOCR PP-OCRv4 (det + rec ONNX, `ch_` models, `ppocr_keys_v1.txt` + blank + trailing space) on onnxruntime-web, single-threaded, main thread. Tesseract.js was tried and dropped: both its LSTM and legacy engines misread the bold "5" on SIM labels as "6" and varied with photo resolution. Re-test on a real photo before swapping engines or models.
+  Each box is read 3 ways (base / padded / contrast-stretched) and the three passes are voted, because a single-pass read let a 5→6 misread through silently; this triples recognition time.
 - **Confidence.** `ctcDecode` returns per-char scores; a value's score is the minimum over its own digits (not the whole line, which may contain garbled Thai). Below 0.9 → "ตรวจสอบ" badge.
 - **Extraction** (`extractNumbers` / `mergeSplitSequence`): exactly 10 digits; spaced or hyphenated groups merge only when the first group has ≥3 digits and every group ≥2; any run of ≥10 digits splits a sequence; exact merges win over the near-miss join. 8/9/11/12-digit results go to the near-miss list, never auto-included. The OCR itself sometimes drops the space in `12 0811111111`, which then lands in near-miss — known limitation.
 - **Image intake** is decided by content (`sniffImageType` magic bytes), not by name or MIME: `.jfif`, extension-less and empty-MIME JPEGs are valid; HEIC is rejected with a message.
