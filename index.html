@@ -523,7 +523,7 @@
     <ul id="rows" class="rows" aria-label="รายการชุดตัวเลข"></ul>
     <p id="empty" class="empty">ยังไม่มีผลลัพธ์ กรุณาเพิ่มรูปแล้วกดเริ่มอ่านข้อความ</p>
 
-    <details id="near-details">
+    <details id="near-details" style="display:none">
       <summary>ตัวเลขที่ไม่แน่ใจ / ยาวไม่ครบหรือเกิน 10 หลัก (ไม่ถูกรวมอัตโนมัติ)</summary>
       <ul id="near-list" class="near-list"></ul>
       <p id="near-empty" class="muted" hidden>ไม่มีรายการ</p>
@@ -1925,7 +1925,7 @@ function orderRows() {
   });
 }
 
-// Adds the OCR rows of one image (unchecked) and returns them.
+// Adds the OCR rows of one image (unchecked), its near values after them, and returns them.
 function addOcrRows(index) {
   const img = state.images[index];
   const added = [];
@@ -1935,6 +1935,16 @@ function addOcrRows(index) {
     const row = {
       id: state.nextRowId++, value, checked: false, source: 'ocr', imageIndex: index, edited: false,
       conflict: alternatives.length > 0 || lowConfidence, alternatives: alternatives.slice(), lowConfidence
+    };
+    state.rows.push(row);
+    added.push(row);
+  });
+  // Doubtful values (wrong length, or read by one pass only) also go into the list, flagged for review.
+  (img.near || []).forEach((value) => {
+    if (img.exact.includes(value)) return;
+    const row = {
+      id: state.nextRowId++, value, checked: false, source: 'ocr', imageIndex: index, edited: false,
+      conflict: true, alternatives: [], lowConfidence: true
     };
     state.rows.push(row);
     added.push(row);
