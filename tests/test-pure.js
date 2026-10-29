@@ -18,7 +18,7 @@ const NAMES = [
   'passFromPaddle', 'withTimeout', 'sniffImageType',
   'cleanSetInput', 'applySelectionToNewRows', 'withInactivityTimeout',
   'isTextEntryTarget', 'toastDurationMs', 'cleanSetEdit',
-  'padBox', 'stretchContrast', 'REC_PAD', 'REC_VARIANTS'
+  'stretchContrast', 'REC_CROP_PAD', 'REC_VARIANTS', 'orientedRect'
 ];
 // setTimeout/clearTimeout are passed in so withTimeout can use them; clearTimeout is wrapped to count cleared timers.
 const timerCleared = [];
@@ -33,7 +33,7 @@ const {
   extractNumbers, buildDocumentXml, applyOcrSelection, groupValues, formatGroupLabel, buildPlainText,
   buildWordHtml, mergePasses, collectCandidates, buildImageResult, sortByRows, sortByColumns,
   ctcDecode, detectComponents, recInputWidth, buildRecKeys, passFromPaddle, sniffImageType,
-  cleanSetInput, applySelectionToNewRows, padBox, stretchContrast, REC_PAD, REC_VARIANTS
+  cleanSetInput, applySelectionToNewRows, stretchContrast, REC_CROP_PAD, REC_VARIANTS, orientedRect
 } = ctx;
 
 let failed = 0, passed = 0;
@@ -536,6 +536,19 @@ const colPasses = [{ scale: 1, text: '', lines: [pl('0000000001', 10, 0), pl('00
 eq('buildImageResult: rows order by default', buildImageResult(colPasses, true).exact, ['0000000001', '0000000002', '0000000003']);
 eq('buildImageResult: rows order', buildImageResult(colPasses, true, 'rows').exact, ['0000000001', '0000000002', '0000000003']);
 tryEq('buildImageResult: columns order', () => buildImageResult(colPasses, true, 'columns').exact, ['0000000001', '0000000003', '0000000002']);
+// A barcode under a label can be read as a garbled copy of the number above it: two values on overlapping
+// lines that differ in at most 3 digits keep the one with the higher score; the other goes to near.
+{
+  const dupPass = [{ scale: 1, text: '', lines: [pl('0863056705', 10, 0, 0.95), pl('0863086703', 12, 8, 0.5)] }];
+  tryEq('buildImageResult: an overlapping near-copy is dropped to near',
+    () => { const r = buildImageResult(dupPass, true); return [r.exact, r.near]; }, [['0863056705'], ['0863086703']]);
+  const keepBoth = [{ scale: 1, text: '', lines: [pl('0864256550', 10, 0), pl('0864256450', 10, 30)] }];
+  tryEq('buildImageResult: near-identical values on separate lines are both kept',
+    () => buildImageResult(keepBoth, true).exact, ['0864256550', '0864256450']);
+  const different = [{ scale: 1, text: '', lines: [pl('0812345678', 10, 0), pl('0998877665', 12, 8)] }];
+  tryEq('buildImageResult: overlapping values that differ in more than 3 digits are both kept',
+    () => buildImageResult(different, true).exact.length, 2);
+}
 eq('ones in a pass: all-ones value is exact (buildImageResult)',
   buildImageResult([{ scale: 1, text: '', lines: [pl('1111111111', 10, 0)] }], true).exact, ['1111111111']);
 eq('ones in a pass: all-ones value is not in the near list (buildImageResult)',
@@ -660,6 +673,25 @@ const roundScore = (list) => list.map((c) => ({ ...c, score: Math.round(c.score 
   const W = 4, H = 3;
   const map = new Array(W * H).fill(0.29); // all below the 0.3 threshold
   tryEq('detect: values at or below 0.3 are ignored', () => detectComponents(map, W, H), []);
+}
+
+// orientedRect(px): the rotated rectangle around a component's pixels, for the deskewed crop.
+{
+  const bar = (deg) => {
+    const a = deg * Math.PI / 180, px = [];
+    for (let u = -100; u < 100; u++) for (let v = -10; v < 10; v++) {
+      px.push(Math.round(200 + u * Math.cos(a) - v * Math.sin(a)), Math.round(100 + u * Math.sin(a) + v * Math.cos(a)));
+    }
+    return orientedRect(px);
+  };
+  const flat = bar(0);
+  tryEq('deskew: a level bar has angle 0, its length, thickness and centre',
+    () => [flat.angle, Math.round(flat.len), Math.round(flat.thick), Math.round(flat.cx), Math.round(flat.cy)], [0, 200, 20, 200, 100]);
+  tryEq('deskew: a bar tilted 8 degrees gives an 8 degree angle', () => Math.round(bar(8).angle * 180 / Math.PI), 8);
+  tryEq('deskew: a bar tilted -5 degrees gives a -5 degree angle', () => Math.round(bar(-5).angle * 180 / Math.PI), -5);
+  tryEq('deskew: the tilted rectangle keeps the bar length and thickness',
+    () => { const r = bar(8); return [Math.abs(r.len - 200) < 4, Math.abs(r.thick - 20) < 4]; }, [true, true]);
+  tryEq('deskew: a tilt beyond 30 degrees is read straight (angle 0)', () => bar(60).angle, 0);
 }
 
 // passFromPaddle: detections -> the app's pass shape. Whole box is the single word; empty text skipped.
@@ -847,18 +879,9 @@ eq('progress: recognition text', src.includes('กำลังอ่านข้
 eq('badge: low-confidence tooltip', src.includes('ความมั่นใจต่ำ ควรตรวจสอบ'), true);
 eq('CSS: .badge-conflict uses amber tokens', /\.badge\.badge-conflict\s*\{[^}]*var\(--conflict/.test(src), true);
 
-// --- triple read (pure): padBox, stretchContrast, REC_PAD, REC_VARIANTS ---
-eq('triple read: REC_PAD is 0.15', REC_PAD, 0.15);
-eq('triple read: REC_VARIANTS are base, pad, contrast in order', REC_VARIANTS, ['base', 'pad', 'contrast']);
-tryEq('padBox: grows by pad * height on top, bottom, left and right',
-  () => padBox({ x0: 100, y0: 50, x1: 200, y1: 90 }, 1000, 1000, 0.25),
-  { x0: 90, y0: 40, x1: 210, y1: 100 });
-tryEq('padBox: clamps to the source image on every side',
-  () => padBox({ x0: 2, y0: 0, x1: 50, y1: 10 }, 40, 30, 1),
-  { x0: 0, y0: 0, x1: 40, y1: 20 });
-tryEq('padBox: returns a new box and leaves the input alone',
-  () => { const b = { x0: 1, y0: 1, x1: 9, y1: 9 }; const r = padBox(b, 100, 100, 0.5); return [r !== b, b.x0, b.y1]; },
-  [true, 1, 9]);
+// --- triple read (pure): REC_CROP_PAD, REC_VARIANTS ---
+tryEq('triple read: every variant has a crop margin, the pad variant the widest',
+  () => REC_VARIANTS.map((v) => REC_CROP_PAD[v] > 0).concat(REC_CROP_PAD.pad > REC_CROP_PAD.base), [true, true, true, true]);
 // Grayscale of an RGBA list; stretchContrast works in place on a Uint8ClampedArray.
 const rgbaOf = (pixels) => Uint8ClampedArray.from(pixels.flat());
 tryEq('stretchContrast: 2nd..98th percentile stretched to 0..255, values clamped, alpha kept',
@@ -893,8 +916,8 @@ tryEq('mergePasses: inBase is true only for groups with an item from the base pa
 
 // Source guards: the three variants are wired through recognizeBox, paddleRead and readImagePasses.
 eq('triple read: recognizeBox takes the variant as its fourth argument', /async function recognizeBox\(m, src, b, variant\)/.test(src), true);
-eq('triple read: recognizeBox crops the padded box for the pad variant',
-  recBody.includes("variant === 'pad'") && recBody.includes('padBox(b, srcWidth(src), srcHeight(src), REC_PAD)'), true);
+eq('deskew: recognizeBox crops the rotated line rectangle, grown by REC_CROP_PAD for the variant',
+  recBody.includes('REC_CROP_PAD[variant]') && recBody.includes('g.rotate(-r.angle)'), true);
 eq('triple read: recognizeBox applies stretchContrast to the contrast variant',
   recBody.includes("variant === 'contrast'") && recBody.includes('stretchContrast(') &&
   recBody.includes('getImageData(') && recBody.includes('putImageData('), true);

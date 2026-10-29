@@ -1066,7 +1066,7 @@ const DET_MIN_SIDE = 3;
 const DET_MIN_SCORE = 0.6;
 
 // prob: detector map, w x h, row-major. Returns [{x0, y0, x1, y1, score}] with inclusive pixel bounds.
-function detectComponents(prob, w, h) {
+function detectComponents(prob, w, h, withRect) {
   const n = w * h;
   const seen = new Uint8Array(n);
   const out = [];
@@ -1074,6 +1074,7 @@ function detectComponents(prob, w, h) {
   for (let i = 0; i < n; i++) {
     if (!(prob[i] > DET_THRESHOLD) || seen[i]) continue;
     let x0 = w, y0 = h, x1 = 0, y1 = 0, cnt = 0, sum = 0;
+    const px = withRect ? [] : null;
     seen[i] = 1;
     stack.push(i);
     while (stack.length) {
@@ -1082,6 +1083,7 @@ function detectComponents(prob, w, h) {
       const y = (p / w) | 0;
       cnt++;
       sum += prob[p];
+      if (px) px.push(x, y);
       if (x < x0) x0 = x;
       if (x > x1) x1 = x;
       if (y < y0) y0 = y;
@@ -1100,9 +1102,45 @@ function detectComponents(prob, w, h) {
     const bw = x1 - x0 + 1;
     const bh = y1 - y0 + 1;
     if (Math.min(bw, bh) < DET_MIN_SIDE || sum / cnt < DET_MIN_SCORE) continue;
-    out.push({ x0, y0, x1, y1, score: sum / cnt });
+    const c = { x0, y0, x1, y1, score: sum / cnt };
+    if (px) c.rect = orientedRect(px);
+    out.push(c);
   }
   return out;
+}
+
+// Deskew limit: a line tilted more than this (radians) is read straight, from its axis-aligned box.
+const MAX_DESKEW = Math.PI / 6;
+
+// The rotated rectangle around pixels [x, y, x, y, ...] (each pixel a unit square): its centre (cx, cy), its
+// angle (radians, the direction of the main axis from principal components, within (-pi/2, pi/2]), its length
+// along that axis and its thickness across it. A tilt beyond MAX_DESKEW gives the axis-aligned rectangle (angle 0).
+function orientedRect(px) {
+  const n = px.length / 2;
+  let mx = 0, my = 0;
+  for (let k = 0; k < n; k++) { mx += px[2 * k] + 0.5; my += px[2 * k + 1] + 0.5; }
+  mx /= n; my /= n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let k = 0; k < n; k++) {
+    const dx = px[2 * k] + 0.5 - mx, dy = px[2 * k + 1] + 0.5 - my;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  let angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  if (!(Math.abs(angle) <= MAX_DESKEW)) angle = 0;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (let k = 0; k < n; k++) {
+    for (const [ox, oy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      const dx = px[2 * k] + ox - mx, dy = px[2 * k + 1] + oy - my;
+      const u = dx * cos + dy * sin, v = -dx * sin + dy * cos;
+      if (u < u0) u0 = u;
+      if (u > u1) u1 = u;
+      if (v < v0) v0 = v;
+      if (v > v1) v1 = v;
+    }
+  }
+  const um = (u0 + u1) / 2, vm = (v0 + v1) / 2;
+  return { cx: mx + um * cos - vm * sin, cy: my + um * sin + vm * cos, angle, len: u1 - u0, thick: v1 - v0 };
 }
 
 // Recognizer input: height 48, width from the box's aspect ratio, kept within [16, 1600].
@@ -1112,21 +1150,10 @@ function recInputWidth(bw, bh) {
 }
 
 // Every detected box is read once per variant, and each variant is one pass for the voting in buildImageResult.
-// 'base' is the detected box, 'pad' the box grown by REC_PAD, 'contrast' the base crop with stretchContrast.
+// Each crop is the deskewed line rectangle grown by REC_CROP_PAD[variant] * its thickness on every side;
+// 'contrast' also gets stretchContrast. A tight crop clipped the flat top of a "5" so it read as "6".
 const REC_VARIANTS = ['base', 'pad', 'contrast'];
-// Margin for the 'pad' variant: this fraction of the box height on every side.
-const REC_PAD = 0.15;
-
-// The box grown by pad * (its height) on top, bottom, left and right, clamped to [0, W0] x [0, H0]. Returns a new box.
-function padBox(b, W0, H0, pad) {
-  const d = pad * (b.y1 - b.y0);
-  return {
-    x0: Math.max(0, b.x0 - d),
-    y0: Math.max(0, b.y0 - d),
-    x1: Math.min(W0, b.x1 + d),
-    y1: Math.min(H0, b.y1 + d)
-  };
-}
+const REC_CROP_PAD = { base: 0.1, pad: 0.25, contrast: 0.1 };
 
 // RGBA pixels (Uint8ClampedArray), in place: gray = 0.299R + 0.587G + 0.114B, then a linear stretch from the
 // 2nd to the 98th percentile of gray up to 0..255. Alpha is untouched. If the two percentiles are equal, only the
@@ -1262,6 +1289,37 @@ function isLowConfidence(m) {
   return typeof m.minScore === 'number' && m.minScore < LOW_CONFIDENCE_SCORE;
 }
 
+// Most digits two values may differ in and still count as a misread copy of each other.
+const SHADOW_MAX_DIFF = 3;
+
+// Merged candidates whose line overlaps another candidate's line (centres closer than half the smaller line
+// height, x ranges overlapping by more than half the narrower width) and whose value differs from it in
+// 1..SHADOW_MAX_DIFF digits: a barcode under a label read as a garbled copy of the number. Of each such pair the
+// one with the lower minScore (on a tie the later one) is returned; the caller moves it to near.
+function dropShadowCopies(list) {
+  const out = [];
+  const diff = (a, b) => {
+    if (a.length !== b.length) return Infinity;
+    let d = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+    return d;
+  };
+  const score = (m) => (typeof m.minScore === 'number' ? m.minScore : 1);
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i], b = list[j];
+      if (out.includes(a) || out.includes(b)) continue;
+      const d = diff(a.value, b.value);
+      if (d < 1 || d > SHADOW_MAX_DIFF) continue;
+      if (!(Math.abs(a.y - b.y) < 0.5 * Math.min(a.lh, b.lh))) continue;
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      if (!(ox > 0.5 * Math.min(a.w, b.w))) continue;
+      out.push(score(b) > score(a) ? a : b);
+    }
+  }
+  return out;
+}
+
 // passes: [{scale, text, lines}], base pass first. order: 'rows' (default, sortByRows) or 'columns' (sortByColumns).
 // Agreement rule, per merged candidate:
 //   votes >= 2                      -> accepted (flagged when other values were seen)
@@ -1284,7 +1342,9 @@ function buildImageResult(passes, fixConfusions, order) {
     if (m.votes >= 2 || m.support >= 2 || m.inBase || singlePassAllowed) accepted.push(m);
     else singles.push(m.value);
   }
-  const ordered = order === 'columns' ? sortByColumns(accepted) : sortByRows(accepted);
+  const shadowed = dropShadowCopies(accepted);
+  const kept = accepted.filter((m) => !shadowed.includes(m));
+  const ordered = order === 'columns' ? sortByColumns(kept) : sortByRows(kept);
   const exact = ordered.map((m) => m.value);
   // Base-only values (support 1 with several passes) are never trusted on their own: flagged for review.
   const lowConf = ordered.map((m) => (!singlePassAllowed && m.support === 1) || isLowConfidence(m));
@@ -1296,6 +1356,9 @@ function buildImageResult(passes, fixConfusions, order) {
     baseNear.push(...extractNumbers(line.text, fixConfusions).nearMiss);
   }
   const near = baseNear.filter((n) => !exact.some((e) => e.includes(n) || n.includes(e)));
+  for (const m of shadowed) {
+    if (!exact.includes(m.value) && !near.includes(m.value)) near.push(m.value);
+  }
   const nearSingle = [];
   for (const v of singles) {
     if (exact.includes(v) || near.includes(v) || nearSingle.includes(v)) continue;
@@ -2047,7 +2110,8 @@ async function detectBoxes(m, src) {
   }
   const res = await m.det.run({ [m.det.inputNames[0]]: t });
   const prob = res[m.det.outputNames[0]].data;
-  return detectComponents(prob, w, h).map((c) => {
+  const sx = W0 / w, sy = H0 / h;
+  return detectComponents(prob, w, h, true).map((c) => {
     // Unclip: grow the box by area * UNCLIP_RATIO / perimeter (detector pixels), then map to the source.
     const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
     const dpx = (bw * bh * UNCLIP_RATIO) / (2 * (bw + bh));
@@ -2055,7 +2119,10 @@ async function detectBoxes(m, src) {
       x0: Math.max(0, (c.x0 - dpx) * W0 / w),
       y0: Math.max(0, (c.y0 - dpx) * H0 / h),
       x1: Math.min(W0, (c.x1 + 1 + dpx) * W0 / w),
-      y1: Math.min(H0, (c.y1 + 1 + dpx) * H0 / h)
+      y1: Math.min(H0, (c.y1 + 1 + dpx) * H0 / h),
+      // The same text line as a rotated rectangle, unclipped the same way, for the deskewed crop.
+      rect: { cx: c.rect.cx * sx, cy: c.rect.cy * sy, angle: c.rect.angle,
+        len: (c.rect.len + 2 * dpx) * sx, thick: (c.rect.thick + 2 * dpx) * sy }
     };
   });
 }
@@ -2064,9 +2131,10 @@ async function detectBoxes(m, src) {
 // variant is one of REC_VARIANTS: 'pad' crops the padded box; 'contrast' stretches the contrast of the crop;
 // anything else (including 'base') crops the detected box as it is.
 async function recognizeBox(m, src, b, variant) {
-  const box = variant === 'pad' ? padBox(b, srcWidth(src), srcHeight(src), REC_PAD) : b;
-  const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
-  const W = recInputWidth(bw, bh);
+  const r = b.rect;
+  const p = (REC_CROP_PAD[variant] || 0) * r.thick;
+  const L = r.len + 2 * p, H = r.thick + 2 * p;
+  const W = recInputWidth(L, H);
   const c = document.createElement('canvas');
   let input;
   try {
@@ -2074,7 +2142,18 @@ async function recognizeBox(m, src, b, variant) {
     c.height = REC_HEIGHT;
     const g = c.getContext('2d', { willReadFrequently: true });
     g.imageSmoothingQuality = 'high';
-    g.drawImage(src, box.x0, box.y0, bw, bh, 0, 0, W, REC_HEIGHT);
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, W, REC_HEIGHT);
+    // Deskew: the rotated rectangle (grown by p on every side) becomes the upright W x 48 input.
+    // Only the source square that can reach the rectangle is drawn.
+    const R = Math.hypot(L, H) / 2;
+    const qx0 = Math.max(0, Math.floor(r.cx - R)), qy0 = Math.max(0, Math.floor(r.cy - R));
+    const qx1 = Math.min(srcWidth(src), Math.ceil(r.cx + R)), qy1 = Math.min(srcHeight(src), Math.ceil(r.cy + R));
+    g.translate(W / 2, REC_HEIGHT / 2);
+    g.scale(W / L, REC_HEIGHT / H);
+    g.rotate(-r.angle);
+    if (qx1 > qx0 && qy1 > qy0) g.drawImage(src, qx0, qy0, qx1 - qx0, qy1 - qy0, qx0 - r.cx, qy0 - r.cy, qx1 - qx0, qy1 - qy0);
+    g.setTransform(1, 0, 0, 1, 0, 0);
     if (variant === 'contrast') {
       const px = g.getImageData(0, 0, W, REC_HEIGHT);
       stretchContrast(px.data);
